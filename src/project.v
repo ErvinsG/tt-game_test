@@ -1,27 +1,36 @@
-/*
- * Copyright (c) 2024 Your Name
- * SPDX-License-Identifier: Apache-2.0
- */
-
+// The Tiny Tapeout top module for the game track (the shell). It is given and you do not edit it.
+// It makes the VGA timing and hands your core the pixel position, the buttons and a once per
+// picture pulse. Your core gives back one colour. Buttons: ui_in[0] left, ui_in[1] right.
 `default_nettype none
 
-module tt_um_example (
-    input  wire [7:0] ui_in,    // Dedicated inputs
-    output wire [7:0] uo_out,   // Dedicated outputs
-    input  wire [7:0] uio_in,   // IOs: Input path
-    output wire [7:0] uio_out,  // IOs: Output path
-    output wire [7:0] uio_oe,   // IOs: Enable path (active high: 0=input, 1=output)
-    input  wire       ena,      // always 1 when the design is powered, so you can ignore it
+module tt_um_ervinsg_game_test (
+    input  wire [7:0] ui_in,    // dedicated inputs
+    output wire [7:0] uo_out,   // dedicated outputs
+    input  wire [7:0] uio_in,   // bidirectional pins, input path
+    output wire [7:0] uio_out,  // bidirectional pins, output path
+    output wire [7:0] uio_oe,   // bidirectional pins, 1 = drive
+    input  wire       ena,      // high when the design is powered, ignore
     input  wire       clk,      // clock
-    input  wire       rst_n     // reset_n - low to reset
+    input  wire       rst_n     // reset, active low
 );
+    wire        hsync, vsync, active, frame;
+    wire [9:0]  x, y;
+    wire [5:0]  rgb;
 
-  // All output pins must be assigned. If not used, assign to 0.
-  assign uo_out  = ui_in + uio_in;  // Example: ou_out is the sum of ui_in and uio_in
-  assign uio_out = 0;
-  assign uio_oe  = 0;
+    vga_sync vga (.clk(clk), .rst_n(rst_n), .hsync(hsync), .vsync(vsync), .active(active), .x(x), .y(y), .frame(frame));
 
-  // List all unused inputs to prevent warnings
-  wire _unused = &{ena, clk, rst_n, 1'b0};
+    game_core core (
+        .clk(clk), .rst_n(rst_n),
+        .left(ui_in[0]), .right(ui_in[1]),
+        .up(ui_in[2]),   .down(ui_in[3]),
+        .x(x), .y(y), .active(active), .frame(frame),
+        .rgb(rgb)
+    );
 
+    // TinyVGA PMOD pin order: {hsync, B0, G0, R0, vsync, B1, G1, R1}
+    assign uo_out = {hsync, rgb[0], rgb[2], rgb[4], vsync, rgb[1], rgb[3], rgb[5]};
+    assign uio_out = 8'd0;
+    assign uio_oe  = 8'd0;
+
+    wire _unused = &{ena, uio_in, ui_in[7:4], 1'b0};
 endmodule

@@ -1,20 +1,11 @@
-<!---
-
-This file is used to generate your project datasheet. Please fill in the information below and delete any unused
-sections.
-
-You can also include images in this folder and reference them in the markdown. Each image must be less than
-512 kb in size, and the combined size of all images must be less than 1 MB.
--->
-
 ## How it works
 
-Explain how your project works
+A VGA timing block says which pixel is being drawn. A paddle position register moves left or right once per picture, and a ball block bounces off the walls and the paddle. Two rectangle comparators decide whether the pixel being drawn is inside the paddle or the ball, and that picks the colour. Both buttons are synchronised and debounced.
 
 ## How to test
 
-Explain how to use your project
+Connect a TinyVGA PMOD and a monitor, run the clock at 25.175 MHz, and press the two buttons to move the paddle.
 
 ## External hardware
 
-List external hardware used in your project (e.g. PMOD, LED display, etc), if any
+TinyVGA PMOD and a VGA monitor, two push buttons.
