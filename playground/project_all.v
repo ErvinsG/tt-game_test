@@ -48,11 +48,14 @@ endmodule
 //
 // Buttons: left selects P1, right selects P2, up/down change the selected one.
 // Select = clutch: the tooth count (P2) can only be changed while the clutch is held or the motor is at 0 rpm.
+// Oil: a 100 h gearbox counter runs down while the motor turns; at 0 an oil can lamp blinks in the top
+// right corner. Press the clutch (Select) and oil drips into the gear mesh, then the counter is back to 100 h.
 // Screen: 20 x 15 text cells of 32 x 32 pixels (a 5x7 glyph drawn at 4x scale).
 
 module game_core #(
     parameter DB   = 500000,     // debounce time in clocks, 20 ms at 25 MHz
-    parameter STEP = 4           // change a value every STEP pictures while up/down is held
+    parameter STEP = 4,          // change a value every STEP pictures while up/down is held
+    parameter HFRAMES = 72       // pictures per gearbox hour: 100 h x 72 / 60 Hz = 2 minutes of running
 ) (
     input  wire        clk,
     input  wire        rst_n,
@@ -86,36 +89,40 @@ module game_core #(
     // ------------------------------------------------------------------
     reg       sel;            // 0 = editing P1, 1 = editing P2
     reg [6:0] p1;             // rpm / 25, 0..80
-    reg [5:0] p2;             // teeth, 12..64
+    reg [6:0] p2;             // teeth, 12..64 (7 bits: 64 does not fit in 6)
 
     // the gears can only be swapped when they are not driven (0 rpm) or the clutch is pressed
     wire can_shift = clutch_c || (p1 == 7'd0);
 
-    // a press acts at once (rising edge); holding the button repeats every STEP pictures
-    reg up_d, down_d;
+    // a press acts at once (rising edge); holding the button for a few steps then repeats every STEP pictures
+    reg       up_d, down_d;
+    reg [1:0] hold;
     always @(posedge clk) begin
         up_d   <= up_c;
         down_d <= down_c;
+        if (!up_c && !down_c)          hold <= 2'd0;
+        else if (step && hold != 2'd3) hold <= hold + 2'd1;
     end
     wire up_rise   = up_c   && !up_d;
     wire down_rise = down_c && !down_d;
+    wire repeat_ok = step && (hold == 2'd3);
 
     always @(posedge clk) begin
         if (!rst_n) begin
             sel <= 1'b0;
             p1  <= 7'd40;     // 1000 rpm
-            p2  <= 6'd12;
+            p2  <= 7'd12;
         end else begin
             if (left_c && !right_c)      sel <= 1'b0;
             else if (right_c && !left_c) sel <= 1'b1;
 
-            if (step || up_rise || down_rise) begin
+            if (repeat_ok || up_rise || down_rise) begin
                 if (!sel) begin
                     if (up_c && !down_c)      p1 <= (p1 < 7'd80) ? p1 + 7'd1 : p1;
                     else if (down_c && !up_c) p1 <= (p1 > 7'd0)  ? p1 - 7'd1 : p1;
                 end else if (can_shift) begin
-                    if (up_c && !down_c)      p2 <= (p2 < 6'd64) ? p2 + 6'd1 : p2;
-                    else if (down_c && !up_c) p2 <= (p2 > 6'd12) ? p2 - 6'd1 : p2;
+                    if (up_c && !down_c)      p2 <= (p2 < 7'd64) ? p2 + 7'd1 : p2;
+                    else if (down_c && !up_c) p2 <= (p2 > 7'd12) ? p2 - 7'd1 : p2;
                 end
             end
         end
@@ -127,7 +134,7 @@ module game_core #(
     // rpm2 = rpm1 * 12 / p2 = p1 * 300 / p2
     wire [14:0] num2 = {p1, 8'b0} + {p1, 5'b0} + {p1, 3'b0} + {p1, 2'b0};
     wire [14:0] rpm2_w;
-    ip_div #(.NW(15), .DW(6)) u_div (.clk(clk), .rst_n(rst_n), .num(num2), .den(p2), .quo(rpm2_w));
+    ip_div #(.NW(15), .DW(7)) u_div (.clk(clk), .rst_n(rst_n), .num(num2), .den(p2), .quo(rpm2_w));
     wire [10:0] rpm2 = rpm2_w[10:0];
 
     // ------------------------------------------------------------------
@@ -137,6 +144,50 @@ module game_core #(
     pwm #(.PRE(8)) u_pwm (.clk(clk), .rst_n(rst_n), .duty(duty), .pwm_out(pwm_out));
 
     // ------------------------------------------------------------------
+    // 3b. gearbox oil: hours left, the lamp and the refill animation
+    // ------------------------------------------------------------------
+    localparam [7:0] REFILL_FRAMES = 8'd150;     // about 2.5 s of dripping
+
+    reg [6:0] hours;          // working hours left, 100 .. 0
+    reg       refill;         // oil is being added
+    reg [7:0] oil_t;          // pictures since the refill started
+    reg [5:0] fcount;         // free running picture counter (lamp blink)
+    reg       clutch_d;
+
+    wire running = (p1 != 7'd0);
+    wire oil_low = (hours == 7'd0);
+    wire hour_tick;
+    ip_tick #(.DIV(HFRAMES)) u_htick (.clk(clk), .rst_n(rst_n),
+        .en(frame && running && !refill && !oil_low), .tick(hour_tick));
+
+    wire clutch_rise = clutch_c && !clutch_d;
+
+    always @(posedge clk) begin
+        clutch_d <= clutch_c;
+        if (!rst_n) begin
+            hours  <= 7'd100;
+            refill <= 1'b0;
+            oil_t  <= 8'd0;
+            fcount <= 6'd0;
+        end else begin
+            if (frame) fcount <= fcount + 6'd1;
+            if (hour_tick) hours <= hours - 7'd1;
+
+            if (clutch_rise && oil_low && !refill) begin
+                refill <= 1'b1;
+                oil_t  <= 8'd0;
+            end else if (refill && frame) begin
+                if (oil_t == REFILL_FRAMES - 8'd1) begin
+                    refill <= 1'b0;
+                    hours  <= 7'd100;
+                end else begin
+                    oil_t <= oil_t + 8'd1;
+                end
+            end
+        end
+    end
+
+    // ------------------------------------------------------------------
     // 4. binary -> decimal digits
     // ------------------------------------------------------------------
     wire [15:0] bcd1, bcd2;
@@ -144,13 +195,16 @@ module game_core #(
     wire [7:0]  bcdt = bcdt16[7:0];
     ip_bin2bcd #(.W(11)) u_b1 (.clk(clk), .rst_n(rst_n), .bin(rpm1), .bcd(bcd1));
     ip_bin2bcd #(.W(11)) u_b2 (.clk(clk), .rst_n(rst_n), .bin(rpm2), .bcd(bcd2));
-    ip_bin2bcd #(.W(6))  u_bt (.clk(clk), .rst_n(rst_n), .bin(p2), .bcd(bcdt16));
+    ip_bin2bcd #(.W(7))  u_bt (.clk(clk), .rst_n(rst_n), .bin(p2), .bcd(bcdt16));
+    wire [15:0] bcdh;
+    ip_bin2bcd #(.W(7))  u_bh (.clk(clk), .rst_n(rst_n), .bin(hours), .bcd(bcdh));
 
     // ------------------------------------------------------------------
     // 5. text: which character sits in this 32x32 cell?   15 = blank
-    //    row 1, cols  9..11  : T and the tooth count
+    //    row 0, cols 12..15  : gearbox hours left + H   (top right, next to the oil lamp)
+    //    row 1, cols 10..12  : T and the tooth count
     //    row 2, cols  2.. 8  : rpm1 + RPM        (left)
-    //    row 2, cols  9..15  : rpm2 + RPM        (right)
+    //    row 2, cols 10..16  : rpm2 + RPM        (right)
     // ------------------------------------------------------------------
     wire [4:0] cx = x[9:5];
     wire [3:0] cy = y[8:5];
@@ -166,15 +220,26 @@ module game_core #(
     wire [3:0] B3 = (b3 == 0) ? 4'd15 : b3;
     wire [3:0] B2 = (b3 == 0 && b2 == 0) ? 4'd15 : b2;
     wire [3:0] B1 = (b3 == 0 && b2 == 0 && b1 == 0) ? 4'd15 : b1;
+    wire [3:0] c2 = bcdh[11:8], c1 = bcdh[7:4], c0 = bcdh[3:0];
+    wire [3:0] C2 = (c2 == 0) ? 4'd15 : c2;
+    wire [3:0] C1 = (c2 == 0 && c1 == 0) ? 4'd15 : c1;
 
     reg [3:0] ch;
     always @(*) begin
         ch = 4'd15;
-        if (cy == 4'd1) begin
+        if (cy == 4'd0) begin
             case (cx)
-                5'd9:  ch = 4'd13;          // T
-                5'd10: ch = bcdt[7:4];
-                5'd11: ch = bcdt[3:0];
+                5'd12: ch = C2;
+                5'd13: ch = C1;
+                5'd14: ch = c0;
+                5'd15: ch = 4'd14;          // H
+                default: ;
+            endcase
+        end else if (cy == 4'd1) begin
+            case (cx)
+                5'd10: ch = 4'd13;          // T
+                5'd11: ch = bcdt[7:4];
+                5'd12: ch = bcdt[3:0];
                 default: ;
             endcase
         end else if (cy == 4'd2) begin
@@ -186,13 +251,13 @@ module game_core #(
                 5'd6:  ch = 4'd10;          // R
                 5'd7:  ch = 4'd11;          // P
                 5'd8:  ch = 4'd12;          // M
-                5'd9:  ch = B3;
-                5'd10: ch = B2;
-                5'd11: ch = B1;
-                5'd12: ch = b0;
-                5'd13: ch = 4'd10;
-                5'd14: ch = 4'd11;
-                5'd15: ch = 4'd12;
+                5'd10: ch = B3;
+                5'd11: ch = B2;
+                5'd12: ch = B1;
+                5'd13: ch = b0;
+                5'd14: ch = 4'd10;
+                5'd15: ch = 4'd11;
+                5'd16: ch = 4'd12;
                 default: ;
             endcase
         end
@@ -209,7 +274,8 @@ module game_core #(
 
     // highlight the parameter being edited
     wire hl     = (!sel && cy == 4'd2 && cx < 5'd9) || (sel && cy == 4'd1 && can_shift);
-    wire locked = sel && cy == 4'd1 && !can_shift;      // P2 selected but the clutch is not pressed
+    wire locked = sel && cy == 4'd1 && !can_shift;
+    wire oil_txt = oil_low && cy == 4'd0;               // hours counter turns red when the oil ran out      // P2 selected but the clutch is not pressed
 
 
     // ------------------------------------------------------------------
@@ -236,7 +302,7 @@ module game_core #(
 
     // pixel offsets, looking 9 clocks ahead to cover the CORDIC pipeline latency
     wire [10:0] xa  = {1'b0, x} + 11'd9;
-    wire [10:0] r11 = {2'b0, p2, 3'b0} + {4'b0, p2, 1'b0} + {5'b0, p2};   // 11 * p2
+    wire [10:0] r11 = {1'b0, p2, 3'b0} + {3'b0, p2, 1'b0} + {4'b0, p2};   // 11 * p2
     wire [10:0] r2  = {2'b0, r11[10:2]};                                  // pitch radius of gear 2
     wire [10:0] dy  = {1'b0, y} - GY;
 
@@ -280,10 +346,37 @@ module game_core #(
     wire in2 = !far2 && (rk2 > k2hole) && ((rk2 < k2root) || ((rk2 < k2tip) && tooth2));
 
     // ------------------------------------------------------------------
+    // 6b. oil can lamp (top right) and the oil drops falling into the gear mesh
+    // ------------------------------------------------------------------
+    wire lamp_shape =
+        (x >= 10'd584 && x < 10'd616 && y >= 10'd24 && y < 10'd44) ||   // body
+        (x >= 10'd568 && x < 10'd584 && y >= 10'd20 && y < 10'd26) ||   // spout
+        (x >= 10'd558 && x < 10'd570 && y >= 10'd14 && y < 10'd22) ||   // spout tip
+        (x >= 10'd616 && x < 10'd626 && y >= 10'd28 && y < 10'd32) ||   // handle, top
+        (x >= 10'd622 && x < 10'd626 && y >= 10'd28 && y < 10'd42) ||   // handle, side
+        (x >= 10'd616 && x < 10'd626 && y >= 10'd38 && y < 10'd42) ||   // handle, bottom
+        (x >= 10'd560 && x < 10'd566 && y >= 10'd28 && y < 10'd38);     // drip
+    wire lamp_on = oil_low && (refill || fcount[4]);
+
+    // three drops, 86 pixels apart, falling 4 px per picture from y=98 into the mesh at x = 179..186
+    wire [7:0] ph0 = {oil_t[5:0], 2'b00};
+    wire [7:0] ph1 = ph0 + 8'd86;
+    wire [7:0] ph2 = ph0 + 8'd171;
+    wire [9:0] dy0 = {2'b00, ph0} + 10'd98;
+    wire [9:0] dy1 = {2'b00, ph1} + 10'd98;
+    wire [9:0] dy2 = {2'b00, ph2} + 10'd98;
+    wire drop_x = (x >= 10'd179) && (x < 10'd187);
+    wire drop0 = refill && drop_x && (ph0 <= 8'd170) && (y >= dy0) && (y < dy0 + 10'd16);
+    wire drop1 = refill && drop_x && (ph1 <= 8'd170) && (y >= dy1) && (y < dy1 + 10'd16);
+    wire drop2 = refill && drop_x && (ph2 <= 8'd170) && (y >= dy2) && (y < dy2 + 10'd16);
+
+    // ------------------------------------------------------------------
     // 7. colour: text white (yellow when selected, red when P2 is locked), background dark blue, black outside the picture
     // ------------------------------------------------------------------
     assign rgb = !active ? 6'b00_00_00 :
-                 text_on ? (locked ? 6'b11_00_00 : hl ? 6'b11_11_00 : 6'b11_11_11) :
+                 text_on ? ((locked || oil_txt) ? 6'b11_00_00 : hl ? 6'b11_11_00 : 6'b11_11_11) :
+                 (lamp_shape && lamp_on) ? 6'b11_00_00 :
+                 (drop0 || drop1 || drop2) ? 6'b11_11_01 :
                  in1     ? 6'b11_10_00 :
                  in2     ? 6'b01_11_11 :
                            6'b00_00_01;
@@ -473,7 +566,7 @@ endmodule
 
 // ===== ip_font.v =====
 // 5x7 font for the characters the display needs.
-// ch: 0-9 digits, 10 R, 11 P, 12 M, 13 T, anything else blank.
+// ch: 0-9 digits, 10 R, 11 P, 12 M, 13 T, 14 H, anything else blank.
 // row: 0 (top) .. 6, anything else blank. bits: the 5 pixels of that row, leftmost pixel is the MSB.
 // One flat case on {ch,row} with 5 bit results (no wide constants, no nested lookups).
 
@@ -582,6 +675,13 @@ module ip_font (
             7'd108: bits = 5'b00100;
             7'd109: bits = 5'b00100;
             7'd110: bits = 5'b00100;
+            7'd112: bits = 5'b10001; // H
+            7'd113: bits = 5'b10001;
+            7'd114: bits = 5'b10001;
+            7'd115: bits = 5'b11111;
+            7'd116: bits = 5'b10001;
+            7'd117: bits = 5'b10001;
+            7'd118: bits = 5'b10001;
             default: bits = 5'b00000;
         endcase
     end

@@ -1,5 +1,5 @@
 // 5x7 font for the characters the display needs.
-// ch: 0-9 digits, 10 R, 11 P, 12 M, 13 T, anything else blank.
+// ch: 0-9 digits, 10 R, 11 P, 12 M, 13 T, 14 H, anything else blank.
 // row: 0 (top) .. 6, anything else blank. bits: the 5 pixels of that row, leftmost pixel is the MSB.
 // One flat case on {ch,row} with 5 bit results (no wide constants, no nested lookups).
 
@@ -108,6 +108,13 @@ module ip_font (
             7'd108: bits = 5'b00100;
             7'd109: bits = 5'b00100;
             7'd110: bits = 5'b00100;
+            7'd112: bits = 5'b10001; // H
+            7'd113: bits = 5'b10001;
+            7'd114: bits = 5'b10001;
+            7'd115: bits = 5'b11111;
+            7'd116: bits = 5'b10001;
+            7'd117: bits = 5'b10001;
+            7'd118: bits = 5'b10001;
             default: bits = 5'b00000;
         endcase
     end
