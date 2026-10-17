@@ -3,7 +3,7 @@ project:
   title:        "Grid chase"
   author:       "Erviins"
   discord:      ""
-  description:  "20x20 grid in fog (3x3 visible): you (dark green) chase a yellow square that runs away; when they meet the game stops and the tile turns dark blue"
+  description:  "20x20 grid in fog (3x3 visible): chase a yellow square that runs away; every catch adds a golden tally line and respawns it"
   language:     "Verilog"
   clock_hz:     25175000
   tiles: "1x1"
