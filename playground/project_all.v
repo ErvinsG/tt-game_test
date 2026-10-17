@@ -42,6 +42,8 @@ endmodule
 // ===== game_core.v =====
 // Gear ratio demo: parameters, rpm2, PWM, text and two meshing gears on screen.
 //
+// Oil: at 5 h or less the lamp blinks and the clutch (Select) adds oil (drips into the mesh, counter back to 100 h).
+// At 0 h it is GAME OVER: motor forced to 0 rpm, controls locked, smoke rises from the gears; only reset restarts.
 //   P1 = motor speed, index 0..80 -> 0..2000 rpm in steps of 25
 //   P2 = teeth of gear 2, 12..64
 //   rpm2 = rpm1 * 12 / P2
@@ -53,9 +55,9 @@ endmodule
 // Screen: 20 x 15 text cells of 32 x 32 pixels (a 5x7 glyph drawn at 4x scale).
 
 module game_core #(
-    parameter DB   = 500000,     // debounce time in clocks, 20 ms at 25 MHz
+    parameter DB   = 500000,     // debounce time in clocks, 20 ms at 25 MHzs
     parameter STEP = 4,          // change a value every STEP pictures while up/down is held
-    parameter HFRAMES = 72       // pictures per gearbox hour: 100 h x 72 / 60 Hz = 2 minutes of running
+    parameter HFRAMES = 36       // pictures per gearbox hour: 100 h x 36 / 60 Hz = 1 minutes of running
 ) (
     input  wire        clk,
     input  wire        rst_n,
@@ -81,6 +83,10 @@ module game_core #(
     ip_debounce #(.N(DB)) db_down  (.clk(clk), .rst_n(rst_n), .noisy(down),  .clean(down_c));
     ip_debounce #(.N(DB)) db_clutch(.clk(clk), .rst_n(rst_n), .noisy(clutch),.clean(clutch_c));
 
+    reg [6:0] hours;          // gearbox working hours left, 100 .. 0
+    wire      oil_low  = (hours == 7'd0);                  // GAME OVER: motor forced to 0 rpm, only reset restarts
+    wire      oil_warn = (hours <= 7'd5) && !oil_low;      // 5 h or less: lamp blinks, the clutch can add oil
+
     wire step;
     ip_tick #(.DIV(STEP)) step_tick (.clk(clk), .rst_n(rst_n), .en(frame), .tick(step));
 
@@ -92,7 +98,7 @@ module game_core #(
     reg [6:0] p2;             // teeth, 12..64 (7 bits: 64 does not fit in 6)
 
     // the gears can only be swapped when they are not driven (0 rpm) or the clutch is pressed
-    wire can_shift = clutch_c || (p1 == 7'd0);
+    wire can_shift = (clutch_c || (p1 == 7'd0)) && !oil_low;
 
     // a press acts at once (rising edge); holding the button for a few steps then repeats every STEP pictures
     reg       up_d, down_d;
@@ -118,13 +124,16 @@ module game_core #(
 
             if (repeat_ok || up_rise || down_rise) begin
                 if (!sel) begin
-                    if (up_c && !down_c)      p1 <= (p1 < 7'd80) ? p1 + 7'd1 : p1;
+                    if (oil_low) ;                       // game over: P1 stays locked at 0
+                    else if (up_c && !down_c) p1 <= (p1 < 7'd80) ? p1 + 7'd1 : p1;
                     else if (down_c && !up_c) p1 <= (p1 > 7'd0)  ? p1 - 7'd1 : p1;
                 end else if (can_shift) begin
                     if (up_c && !down_c)      p2 <= (p2 < 7'd64) ? p2 + 7'd1 : p2;
                     else if (down_c && !up_c) p2 <= (p2 > 7'd12) ? p2 - 7'd1 : p2;
                 end
             end
+
+            if (oil_low) p1 <= 7'd0;             // the gearbox seized: motor speed forced to 0 rpm
         end
     end
 
@@ -148,14 +157,12 @@ module game_core #(
     // ------------------------------------------------------------------
     localparam [7:0] REFILL_FRAMES = 8'd150;     // about 2.5 s of dripping
 
-    reg [6:0] hours;          // working hours left, 100 .. 0
     reg       refill;         // oil is being added
     reg [7:0] oil_t;          // pictures since the refill started
-    reg [5:0] fcount;         // free running picture counter (lamp blink)
+    reg [7:0] fcount;         // free running picture counter (lamp blink, smoke)
     reg       clutch_d;
 
     wire running = (p1 != 7'd0);
-    wire oil_low = (hours == 7'd0);
     wire hour_tick;
     ip_tick #(.DIV(HFRAMES)) u_htick (.clk(clk), .rst_n(rst_n),
         .en(frame && running && !refill && !oil_low), .tick(hour_tick));
@@ -165,15 +172,15 @@ module game_core #(
     always @(posedge clk) begin
         clutch_d <= clutch_c;
         if (!rst_n) begin
-            hours  <= 7'd100;
+            hours  <= 7'd12;
             refill <= 1'b0;
             oil_t  <= 8'd0;
-            fcount <= 6'd0;
+            fcount <= 8'd0;
         end else begin
-            if (frame) fcount <= fcount + 6'd1;
+            if (frame) fcount <= fcount + 8'd1;
             if (hour_tick) hours <= hours - 7'd1;
 
-            if (clutch_rise && oil_low && !refill) begin
+            if (clutch_rise && oil_warn && !refill) begin
                 refill <= 1'b1;
                 oil_t  <= 8'd0;
             end else if (refill && frame) begin
@@ -224,15 +231,27 @@ module game_core #(
     wire [3:0] C2 = (c2 == 0) ? 4'd15 : c2;
     wire [3:0] C1 = (c2 == 0 && c1 == 0) ? 4'd15 : c1;
 
-    reg [3:0] ch;
+    reg [4:0] ch;
     always @(*) begin
         ch = 4'd15;
-        if (cy == 4'd0) begin
+        if (cy == 4'd3 && oil_low) begin             // GAME OVER banner (row 3 = y 96..127, above the smoke)
             case (cx)
-                5'd12: ch = C2;
-                5'd13: ch = C1;
-                5'd14: ch = c0;
-                5'd15: ch = 4'd14;          // H
+                5'd5:  ch = 5'd16;          // G
+                5'd6:  ch = 5'd17;          // A
+                5'd7:  ch = 5'd12;          // M
+                5'd8:  ch = 5'd18;          // E
+                5'd10: ch = 5'd19;          // O
+                5'd11: ch = 5'd20;          // V
+                5'd12: ch = 5'd18;          // E
+                5'd13: ch = 5'd10;          // R
+                default: ;
+            endcase
+        end else if (cy == 4'd14) begin
+            case (cx)
+                5'd8: ch = C2;
+                5'd9: ch = C1;
+                5'd10: ch = c0;
+                5'd11: ch = 4'd14;          // H
                 default: ;
             endcase
         end else if (cy == 4'd1) begin
@@ -275,7 +294,9 @@ module game_core #(
     // highlight the parameter being edited
     wire hl     = (!sel && cy == 4'd2 && cx < 5'd9) || (sel && cy == 4'd1 && can_shift);
     wire locked = sel && cy == 4'd1 && !can_shift;
-    wire oil_txt = oil_low && cy == 4'd0;               // hours counter turns red when the oil ran out      // P2 selected but the clutch is not pressed
+    wire oil_txt = (oil_warn || oil_low) && cy == 4'd14;     // hours counter turns red at 5 h or less
+    wire go_row  = oil_low && cy == 4'd3;                    // GAME OVER text row
+    wire go_box  = go_row && cx >= 5'd4 && cx <= 5'd14;      // black box behind the banner
 
 
     // ------------------------------------------------------------------
@@ -356,7 +377,7 @@ module game_core #(
         (x >= 10'd622 && x < 10'd626 && y >= 10'd28 && y < 10'd42) ||   // handle, side
         (x >= 10'd616 && x < 10'd626 && y >= 10'd38 && y < 10'd42) ||   // handle, bottom
         (x >= 10'd560 && x < 10'd566 && y >= 10'd28 && y < 10'd38);     // drip
-    wire lamp_on = oil_low && (refill || fcount[4]);
+    wire lamp_on = (oil_warn || oil_low) && (refill || oil_low || fcount[4]);   // blinks while waiting, solid when out/refilling
 
     // three drops, 86 pixels apart, falling 4 px per picture from y=98 into the mesh at x = 179..186
     wire [7:0] ph0 = {oil_t[5:0], 2'b00};
@@ -370,13 +391,25 @@ module game_core #(
     wire drop1 = refill && drop_x && (ph1 <= 8'd170) && (y >= dy1) && (y < dy1 + 10'd16);
     wire drop2 = refill && drop_x && (ph2 <= 8'd170) && (y >= dy2) && (y < dy2 + 10'd16);
 
+    // smoke: ten grey puffs (two columns of five) rise from the top of both gears at GAME OVER
+    wire smoke_on = oil_low;
+    wire sm1_any, sm1_young, sm2_any, sm2_young;
+    ip_smoke u_sm1 (.x(x), .y(y), .xs(G1X), .ys(GY - G1R - 11'd8), .t(fcount[6:0]),
+                    .any(sm1_any), .young(sm1_young));
+    ip_smoke u_sm2 (.x(x), .y(y), .xs(g2x), .ys(GY - r2 - 11'd8),  .t(fcount[6:0] + 7'd13),
+                    .any(sm2_any), .young(sm2_young));
+    wire smoke_any   = sm1_any   || sm2_any;
+    wire smoke_young = sm1_young || sm2_young;
+
     // ------------------------------------------------------------------
     // 7. colour: text white (yellow when selected, red when P2 is locked), background dark blue, black outside the picture
     // ------------------------------------------------------------------
     assign rgb = !active ? 6'b00_00_00 :
-                 text_on ? ((locked || oil_txt) ? 6'b11_00_00 : hl ? 6'b11_11_00 : 6'b11_11_11) :
+                 text_on ? ((locked || oil_txt || go_row) ? 6'b11_00_00 : hl ? 6'b11_11_00 : 6'b11_11_11) :
+                 go_box  ? 6'b00_00_00 :
                  (lamp_shape && lamp_on) ? 6'b11_00_00 :
                  (drop0 || drop1 || drop2) ? 6'b11_11_01 :
+                 (smoke_on && smoke_any) ? (smoke_young ? 6'b10_10_10 : 6'b01_01_01) :
                  in1     ? 6'b11_10_00 :
                  in2     ? 6'b01_11_11 :
                            6'b00_00_01;
@@ -557,7 +590,7 @@ module ip_bin2bcd #(
             lo  <= bin;
             cnt <= 5'd0;
         end else begin
-            hi  <= {d2, d1, d0, lo[W-1]};
+            hi  <= {d3[2:0], d2, d1, d0, lo[W-1]};     // shift the whole 16 bits left by one
             lo  <= {lo[W-2:0], 1'b0};
             cnt <= cnt + 5'd1;
         end
@@ -566,122 +599,157 @@ endmodule
 
 // ===== ip_font.v =====
 // 5x7 font for the characters the display needs.
-// ch: 0-9 digits, 10 R, 11 P, 12 M, 13 T, 14 H, anything else blank.
+// ch (5 bits): 0-9 digits, 10 R, 11 P, 12 M, 13 T, 14 H, 16 G, 17 A, 18 E, 19 O, 20 V; anything else blank (15 = space).
 // row: 0 (top) .. 6, anything else blank. bits: the 5 pixels of that row, leftmost pixel is the MSB.
 // One flat case on {ch,row} with 5 bit results (no wide constants, no nested lookups).
 
 module ip_font (
-    input  wire [3:0]  ch,
+    input  wire [4:0]  ch,
     input  wire [2:0]  row,
     output reg  [4:0]  bits
 );
     always @(*) begin
         case ({ch, row})
-            7'd0: bits = 5'b01110;
-            7'd1: bits = 5'b10001;
-            7'd2: bits = 5'b10011;
-            7'd3: bits = 5'b10101;
-            7'd4: bits = 5'b11001;
-            7'd5: bits = 5'b10001;
-            7'd6: bits = 5'b01110;
-            7'd8: bits = 5'b00100;
-            7'd9: bits = 5'b01100;
-            7'd10: bits = 5'b00100;
-            7'd11: bits = 5'b00100;
-            7'd12: bits = 5'b00100;
-            7'd13: bits = 5'b00100;
-            7'd14: bits = 5'b01110;
-            7'd16: bits = 5'b01110;
-            7'd17: bits = 5'b10001;
-            7'd18: bits = 5'b00001;
-            7'd19: bits = 5'b00010;
-            7'd20: bits = 5'b00100;
-            7'd21: bits = 5'b01000;
-            7'd22: bits = 5'b11111;
-            7'd24: bits = 5'b11110;
-            7'd25: bits = 5'b00001;
-            7'd26: bits = 5'b00001;
-            7'd27: bits = 5'b01110;
-            7'd28: bits = 5'b00001;
-            7'd29: bits = 5'b00001;
-            7'd30: bits = 5'b11110;
-            7'd32: bits = 5'b00010;
-            7'd33: bits = 5'b00110;
-            7'd34: bits = 5'b01010;
-            7'd35: bits = 5'b10010;
-            7'd36: bits = 5'b11111;
-            7'd37: bits = 5'b00010;
-            7'd38: bits = 5'b00010;
-            7'd40: bits = 5'b11111;
-            7'd41: bits = 5'b10000;
-            7'd42: bits = 5'b11110;
-            7'd43: bits = 5'b00001;
-            7'd44: bits = 5'b00001;
-            7'd45: bits = 5'b10001;
-            7'd46: bits = 5'b01110;
-            7'd48: bits = 5'b00110;
-            7'd49: bits = 5'b01000;
-            7'd50: bits = 5'b10000;
-            7'd51: bits = 5'b11110;
-            7'd52: bits = 5'b10001;
-            7'd53: bits = 5'b10001;
-            7'd54: bits = 5'b01110;
-            7'd56: bits = 5'b11111;
-            7'd57: bits = 5'b00001;
-            7'd58: bits = 5'b00010;
-            7'd59: bits = 5'b00100;
-            7'd60: bits = 5'b01000;
-            7'd61: bits = 5'b01000;
-            7'd62: bits = 5'b01000;
-            7'd64: bits = 5'b01110;
-            7'd65: bits = 5'b10001;
-            7'd66: bits = 5'b10001;
-            7'd67: bits = 5'b01110;
-            7'd68: bits = 5'b10001;
-            7'd69: bits = 5'b10001;
-            7'd70: bits = 5'b01110;
-            7'd72: bits = 5'b01110;
-            7'd73: bits = 5'b10001;
-            7'd74: bits = 5'b10001;
-            7'd75: bits = 5'b01111;
-            7'd76: bits = 5'b00001;
-            7'd77: bits = 5'b00010;
-            7'd78: bits = 5'b01100;
-            7'd80: bits = 5'b11110; // R
-            7'd81: bits = 5'b10001;
-            7'd82: bits = 5'b10001;
-            7'd83: bits = 5'b11110;
-            7'd84: bits = 5'b10100;
-            7'd85: bits = 5'b10010;
-            7'd86: bits = 5'b10001;
-            7'd88: bits = 5'b11110; // P
-            7'd89: bits = 5'b10001;
-            7'd90: bits = 5'b10001;
-            7'd91: bits = 5'b11110;
-            7'd92: bits = 5'b10000;
-            7'd93: bits = 5'b10000;
-            7'd94: bits = 5'b10000;
-            7'd96: bits = 5'b10001; // M
-            7'd97: bits = 5'b11011;
-            7'd98: bits = 5'b10101;
-            7'd99: bits = 5'b10101;
-            7'd100: bits = 5'b10001;
-            7'd101: bits = 5'b10001;
-            7'd102: bits = 5'b10001;
-            7'd104: bits = 5'b11111; // T
-            7'd105: bits = 5'b00100;
-            7'd106: bits = 5'b00100;
-            7'd107: bits = 5'b00100;
-            7'd108: bits = 5'b00100;
-            7'd109: bits = 5'b00100;
-            7'd110: bits = 5'b00100;
-            7'd112: bits = 5'b10001; // H
-            7'd113: bits = 5'b10001;
-            7'd114: bits = 5'b10001;
-            7'd115: bits = 5'b11111;
-            7'd116: bits = 5'b10001;
-            7'd117: bits = 5'b10001;
-            7'd118: bits = 5'b10001;
+            8'd0: bits = 5'b01110;
+            8'd1: bits = 5'b10001;
+            8'd2: bits = 5'b10011;
+            8'd3: bits = 5'b10101;
+            8'd4: bits = 5'b11001;
+            8'd5: bits = 5'b10001;
+            8'd6: bits = 5'b01110;
+            8'd8: bits = 5'b00100;
+            8'd9: bits = 5'b01100;
+            8'd10: bits = 5'b00100;
+            8'd11: bits = 5'b00100;
+            8'd12: bits = 5'b00100;
+            8'd13: bits = 5'b00100;
+            8'd14: bits = 5'b01110;
+            8'd16: bits = 5'b01110;
+            8'd17: bits = 5'b10001;
+            8'd18: bits = 5'b00001;
+            8'd19: bits = 5'b00010;
+            8'd20: bits = 5'b00100;
+            8'd21: bits = 5'b01000;
+            8'd22: bits = 5'b11111;
+            8'd24: bits = 5'b11110;
+            8'd25: bits = 5'b00001;
+            8'd26: bits = 5'b00001;
+            8'd27: bits = 5'b01110;
+            8'd28: bits = 5'b00001;
+            8'd29: bits = 5'b00001;
+            8'd30: bits = 5'b11110;
+            8'd32: bits = 5'b00010;
+            8'd33: bits = 5'b00110;
+            8'd34: bits = 5'b01010;
+            8'd35: bits = 5'b10010;
+            8'd36: bits = 5'b11111;
+            8'd37: bits = 5'b00010;
+            8'd38: bits = 5'b00010;
+            8'd40: bits = 5'b11111;
+            8'd41: bits = 5'b10000;
+            8'd42: bits = 5'b11110;
+            8'd43: bits = 5'b00001;
+            8'd44: bits = 5'b00001;
+            8'd45: bits = 5'b10001;
+            8'd46: bits = 5'b01110;
+            8'd48: bits = 5'b00110;
+            8'd49: bits = 5'b01000;
+            8'd50: bits = 5'b10000;
+            8'd51: bits = 5'b11110;
+            8'd52: bits = 5'b10001;
+            8'd53: bits = 5'b10001;
+            8'd54: bits = 5'b01110;
+            8'd56: bits = 5'b11111;
+            8'd57: bits = 5'b00001;
+            8'd58: bits = 5'b00010;
+            8'd59: bits = 5'b00100;
+            8'd60: bits = 5'b01000;
+            8'd61: bits = 5'b01000;
+            8'd62: bits = 5'b01000;
+            8'd64: bits = 5'b01110;
+            8'd65: bits = 5'b10001;
+            8'd66: bits = 5'b10001;
+            8'd67: bits = 5'b01110;
+            8'd68: bits = 5'b10001;
+            8'd69: bits = 5'b10001;
+            8'd70: bits = 5'b01110;
+            8'd72: bits = 5'b01110;
+            8'd73: bits = 5'b10001;
+            8'd74: bits = 5'b10001;
+            8'd75: bits = 5'b01111;
+            8'd76: bits = 5'b00001;
+            8'd77: bits = 5'b00010;
+            8'd78: bits = 5'b01100;
+            8'd80: bits = 5'b11110; // R
+            8'd81: bits = 5'b10001;
+            8'd82: bits = 5'b10001;
+            8'd83: bits = 5'b11110;
+            8'd84: bits = 5'b10100;
+            8'd85: bits = 5'b10010;
+            8'd86: bits = 5'b10001;
+            8'd88: bits = 5'b11110; // P
+            8'd89: bits = 5'b10001;
+            8'd90: bits = 5'b10001;
+            8'd91: bits = 5'b11110;
+            8'd92: bits = 5'b10000;
+            8'd93: bits = 5'b10000;
+            8'd94: bits = 5'b10000;
+            8'd96: bits = 5'b10001; // M
+            8'd97: bits = 5'b11011;
+            8'd98: bits = 5'b10101;
+            8'd99: bits = 5'b10101;
+            8'd100: bits = 5'b10001;
+            8'd101: bits = 5'b10001;
+            8'd102: bits = 5'b10001;
+            8'd104: bits = 5'b11111; // T
+            8'd105: bits = 5'b00100;
+            8'd106: bits = 5'b00100;
+            8'd107: bits = 5'b00100;
+            8'd108: bits = 5'b00100;
+            8'd109: bits = 5'b00100;
+            8'd110: bits = 5'b00100;
+            8'd112: bits = 5'b10001; // H
+            8'd113: bits = 5'b10001;
+            8'd114: bits = 5'b10001;
+            8'd115: bits = 5'b11111;
+            8'd116: bits = 5'b10001;
+            8'd117: bits = 5'b10001;
+            8'd118: bits = 5'b10001;
+            8'd128: bits = 5'b01110; // G
+            8'd129: bits = 5'b10001;
+            8'd130: bits = 5'b10000;
+            8'd131: bits = 5'b10111;
+            8'd132: bits = 5'b10001;
+            8'd133: bits = 5'b10001;
+            8'd134: bits = 5'b01111;
+            8'd136: bits = 5'b01110; // A
+            8'd137: bits = 5'b10001;
+            8'd138: bits = 5'b10001;
+            8'd139: bits = 5'b11111;
+            8'd140: bits = 5'b10001;
+            8'd141: bits = 5'b10001;
+            8'd142: bits = 5'b10001;
+            8'd144: bits = 5'b11111; // E
+            8'd145: bits = 5'b10000;
+            8'd146: bits = 5'b10000;
+            8'd147: bits = 5'b11110;
+            8'd148: bits = 5'b10000;
+            8'd149: bits = 5'b10000;
+            8'd150: bits = 5'b11111;
+            8'd152: bits = 5'b01110; // O
+            8'd153: bits = 5'b10001;
+            8'd154: bits = 5'b10001;
+            8'd155: bits = 5'b10001;
+            8'd156: bits = 5'b10001;
+            8'd157: bits = 5'b10001;
+            8'd158: bits = 5'b01110;
+            8'd160: bits = 5'b10001; // V
+            8'd161: bits = 5'b10001;
+            8'd162: bits = 5'b10001;
+            8'd163: bits = 5'b10001;
+            8'd164: bits = 5'b10001;
+            8'd165: bits = 5'b01010;
+            8'd166: bits = 5'b00100;
             default: bits = 5'b00000;
         endcase
     end
@@ -784,6 +852,74 @@ module ip_kmul (
     output wire [10:0] k
 );
     assign k = {2'b0, t} + {3'b0, t[8:1]} + {5'b0, t[8:3]} + {8'b0, t[8:6]} + {9'b0, t[8:7]};
+endmodule
+
+// ===== ip_puff.v =====
+// One round-ish smoke puff: an octagon of half-size hs centred on (xc, yc).
+// Inside when |dx| < hs, |dy| < hs and |dx| + |dy| < 1.5 * hs (the square with its corners cut off).
+
+module ip_puff (
+    input  wire [9:0]  x,
+    input  wire [9:0]  y,
+    input  wire [10:0] xc,
+    input  wire [10:0] yc,
+    input  wire [3:0]  hs,
+    output wire        hit
+);
+    wire [10:0] xe  = {1'b0, x};
+    wire [10:0] ye  = {1'b0, y};
+    wire [10:0] dxa = (xe >= xc) ? (xe - xc) : (xc - xe);
+    wire [10:0] dya = (ye >= yc) ? (ye - yc) : (yc - ye);
+    wire [10:0] h   = {7'b0, hs};
+    assign hit = (dxa < h) && (dya < h) && ((dxa + dya) < (h + {1'b0, h[10:1]}));
+endmodule
+
+// ===== ip_smoke.v =====
+// A column of smoke above a source point (xs, ys): five puffs, each living 128 pictures.
+// A puff rises about 0.75 px per picture (up to ~94 px), wobbles sideways, grows (half-size 4..11) and darkens with age.
+// t is the picture counter (the caller adds a phase so two columns do not move in step).
+
+module ip_smoke (
+    input  wire [9:0]  x,
+    input  wire [9:0]  y,
+    input  wire [10:0] xs,
+    input  wire [10:0] ys,
+    input  wire [6:0]  t,
+    output wire        any,
+    output wire        young       // the puff that was hit is in the first half of its life
+);
+    wire [6:0] a0 = t;
+    wire [6:0] a1 = t + 7'd26;
+    wire [6:0] a2 = t + 7'd51;
+    wire [6:0] a3 = t + 7'd77;
+    wire [6:0] a4 = t + 7'd102;
+
+    wire [3:0] w0 = a0[4] ? ~a0[3:0] : a0[3:0];          // triangle wave 0..15 = the wobble
+    wire [3:0] w1 = a1[4] ? ~a1[3:0] : a1[3:0];
+    wire [3:0] w2 = a2[4] ? ~a2[3:0] : a2[3:0];
+    wire [3:0] w3 = a3[4] ? ~a3[3:0] : a3[3:0];
+    wire [3:0] w4 = a4[4] ? ~a4[3:0] : a4[3:0];
+
+    wire [10:0] x0 = xs - 11'd14 + {7'b0, w0};
+    wire [10:0] x1 = xs -  11'd2 + {7'b0, w1};
+    wire [10:0] x2 = xs - 11'd10 + {7'b0, w2};
+    wire [10:0] x3 = xs +  11'd2 + {7'b0, w3};
+    wire [10:0] x4 = xs -  11'd6 + {7'b0, w4};
+    wire [10:0] y0 = ys - {5'b0, a0[6:1]} - {6'b0, a0[6:2]};
+    wire [10:0] y1 = ys - {5'b0, a1[6:1]} - {6'b0, a1[6:2]};
+    wire [10:0] y2 = ys - {5'b0, a2[6:1]} - {6'b0, a2[6:2]};
+    wire [10:0] y3 = ys - {5'b0, a3[6:1]} - {6'b0, a3[6:2]};
+    wire [10:0] y4 = ys - {5'b0, a4[6:1]} - {6'b0, a4[6:2]};
+
+    wire p0, p1, p2, p3, p4;
+    ip_puff u0 (.x(x), .y(y), .xc(x0), .yc(y0), .hs({1'b0, a0[6:4]} + 4'd4), .hit(p0));
+    ip_puff u1 (.x(x), .y(y), .xc(x1), .yc(y1), .hs({1'b0, a1[6:4]} + 4'd4), .hit(p1));
+    ip_puff u2 (.x(x), .y(y), .xc(x2), .yc(y2), .hs({1'b0, a2[6:4]} + 4'd4), .hit(p2));
+    ip_puff u3 (.x(x), .y(y), .xc(x3), .yc(y3), .hs({1'b0, a3[6:4]} + 4'd4), .hit(p3));
+    ip_puff u4 (.x(x), .y(y), .xc(x4), .yc(y4), .hs({1'b0, a4[6:4]} + 4'd4), .hit(p4));
+
+    assign any   = p0 || p1 || p2 || p3 || p4;
+    assign young = (p0 && !a0[6]) || (p1 && !a1[6]) || (p2 && !a2[6]) || (p3 && !a3[6]) || (p4 && !a4[6]);
 endmodule
 
 // ===== pwm.v =====

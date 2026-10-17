@@ -1,5 +1,7 @@
 // Gear ratio demo: parameters, rpm2, PWM, text and two meshing gears on screen.
 //
+// Oil: at 5 h or less the lamp blinks and the clutch (Select) adds oil (drips into the mesh, counter back to 100 h).
+// At 0 h it is GAME OVER: motor forced to 0 rpm, controls locked, smoke rises from the gears; only reset restarts.
 //   P1 = motor speed, index 0..80 -> 0..2000 rpm in steps of 25
 //   P2 = teeth of gear 2, 12..64
 //   rpm2 = rpm1 * 12 / P2
@@ -40,6 +42,10 @@ module game_core #(
     ip_debounce #(.N(DB)) db_down  (.clk(clk), .rst_n(rst_n), .noisy(down),  .clean(down_c));
     ip_debounce #(.N(DB)) db_clutch(.clk(clk), .rst_n(rst_n), .noisy(clutch),.clean(clutch_c));
 
+    reg [6:0] hours;          // gearbox working hours left, 100 .. 0
+    wire      oil_low  = (hours == 7'd0);                  // GAME OVER: motor forced to 0 rpm, only reset restarts
+    wire      oil_warn = (hours <= 7'd5) && !oil_low;      // 5 h or less: lamp blinks, the clutch can add oil
+
     wire step;
     ip_tick #(.DIV(STEP)) step_tick (.clk(clk), .rst_n(rst_n), .en(frame), .tick(step));
 
@@ -51,7 +57,7 @@ module game_core #(
     reg [6:0] p2;             // teeth, 12..64 (7 bits: 64 does not fit in 6)
 
     // the gears can only be swapped when they are not driven (0 rpm) or the clutch is pressed
-    wire can_shift = clutch_c || (p1 == 7'd0);
+    wire can_shift = (clutch_c || (p1 == 7'd0)) && !oil_low;
 
     // a press acts at once (rising edge); holding the button for a few steps then repeats every STEP pictures
     reg       up_d, down_d;
@@ -77,13 +83,16 @@ module game_core #(
 
             if (repeat_ok || up_rise || down_rise) begin
                 if (!sel) begin
-                    if (up_c && !down_c)      p1 <= (p1 < 7'd80) ? p1 + 7'd1 : p1;
+                    if (oil_low) ;                       // game over: P1 stays locked at 0
+                    else if (up_c && !down_c) p1 <= (p1 < 7'd80) ? p1 + 7'd1 : p1;
                     else if (down_c && !up_c) p1 <= (p1 > 7'd0)  ? p1 - 7'd1 : p1;
                 end else if (can_shift) begin
                     if (up_c && !down_c)      p2 <= (p2 < 7'd64) ? p2 + 7'd1 : p2;
                     else if (down_c && !up_c) p2 <= (p2 > 7'd12) ? p2 - 7'd1 : p2;
                 end
             end
+
+            if (oil_low) p1 <= 7'd0;             // the gearbox seized: motor speed forced to 0 rpm
         end
     end
 
@@ -107,14 +116,12 @@ module game_core #(
     // ------------------------------------------------------------------
     localparam [7:0] REFILL_FRAMES = 8'd150;     // about 2.5 s of dripping
 
-    reg [6:0] hours;          // working hours left, 100 .. 0
     reg       refill;         // oil is being added
     reg [7:0] oil_t;          // pictures since the refill started
-    reg [5:0] fcount;         // free running picture counter (lamp blink)
+    reg [7:0] fcount;         // free running picture counter (lamp blink, smoke)
     reg       clutch_d;
 
     wire running = (p1 != 7'd0);
-    wire oil_low = (hours == 7'd0);
     wire hour_tick;
     ip_tick #(.DIV(HFRAMES)) u_htick (.clk(clk), .rst_n(rst_n),
         .en(frame && running && !refill && !oil_low), .tick(hour_tick));
@@ -124,15 +131,15 @@ module game_core #(
     always @(posedge clk) begin
         clutch_d <= clutch_c;
         if (!rst_n) begin
-            hours  <= 7'd100;
+            hours  <= 7'd12;
             refill <= 1'b0;
             oil_t  <= 8'd0;
-            fcount <= 6'd0;
+            fcount <= 8'd0;
         end else begin
-            if (frame) fcount <= fcount + 6'd1;
+            if (frame) fcount <= fcount + 8'd1;
             if (hour_tick) hours <= hours - 7'd1;
 
-            if (clutch_rise && oil_low && !refill) begin
+            if (clutch_rise && oil_warn && !refill) begin
                 refill <= 1'b1;
                 oil_t  <= 8'd0;
             end else if (refill && frame) begin
@@ -183,15 +190,27 @@ module game_core #(
     wire [3:0] C2 = (c2 == 0) ? 4'd15 : c2;
     wire [3:0] C1 = (c2 == 0 && c1 == 0) ? 4'd15 : c1;
 
-    reg [3:0] ch;
+    reg [4:0] ch;
     always @(*) begin
         ch = 4'd15;
-        if (cy == 4'd0) begin
+        if (cy == 4'd3 && oil_low) begin             // GAME OVER banner (row 3 = y 96..127, above the smoke)
             case (cx)
-                5'd12: ch = C2;
-                5'd13: ch = C1;
-                5'd14: ch = c0;
-                5'd15: ch = 4'd14;          // H
+                5'd5:  ch = 5'd16;          // G
+                5'd6:  ch = 5'd17;          // A
+                5'd7:  ch = 5'd12;          // M
+                5'd8:  ch = 5'd18;          // E
+                5'd10: ch = 5'd19;          // O
+                5'd11: ch = 5'd20;          // V
+                5'd12: ch = 5'd18;          // E
+                5'd13: ch = 5'd10;          // R
+                default: ;
+            endcase
+        end else if (cy == 4'd14) begin
+            case (cx)
+                5'd8: ch = C2;
+                5'd9: ch = C1;
+                5'd10: ch = c0;
+                5'd11: ch = 4'd14;          // H
                 default: ;
             endcase
         end else if (cy == 4'd1) begin
@@ -234,7 +253,9 @@ module game_core #(
     // highlight the parameter being edited
     wire hl     = (!sel && cy == 4'd2 && cx < 5'd9) || (sel && cy == 4'd1 && can_shift);
     wire locked = sel && cy == 4'd1 && !can_shift;
-    wire oil_txt = oil_low && cy == 4'd0;               // hours counter turns red when the oil ran out      // P2 selected but the clutch is not pressed
+    wire oil_txt = (oil_warn || oil_low) && cy == 4'd14;     // hours counter turns red at 5 h or less
+    wire go_row  = oil_low && cy == 4'd3;                    // GAME OVER text row
+    wire go_box  = go_row && cx >= 5'd4 && cx <= 5'd14;      // black box behind the banner
 
 
     // ------------------------------------------------------------------
@@ -315,7 +336,7 @@ module game_core #(
         (x >= 10'd622 && x < 10'd626 && y >= 10'd28 && y < 10'd42) ||   // handle, side
         (x >= 10'd616 && x < 10'd626 && y >= 10'd38 && y < 10'd42) ||   // handle, bottom
         (x >= 10'd560 && x < 10'd566 && y >= 10'd28 && y < 10'd38);     // drip
-    wire lamp_on = oil_low && (refill || fcount[4]);
+    wire lamp_on = (oil_warn || oil_low) && (refill || oil_low || fcount[4]);   // blinks while waiting, solid when out/refilling
 
     // three drops, 86 pixels apart, falling 4 px per picture from y=98 into the mesh at x = 179..186
     wire [7:0] ph0 = {oil_t[5:0], 2'b00};
@@ -329,13 +350,25 @@ module game_core #(
     wire drop1 = refill && drop_x && (ph1 <= 8'd170) && (y >= dy1) && (y < dy1 + 10'd16);
     wire drop2 = refill && drop_x && (ph2 <= 8'd170) && (y >= dy2) && (y < dy2 + 10'd16);
 
+    // smoke: ten grey puffs (two columns of five) rise from the top of both gears at GAME OVER
+    wire smoke_on = oil_low;
+    wire sm1_any, sm1_young, sm2_any, sm2_young;
+    ip_smoke u_sm1 (.x(x), .y(y), .xs(G1X), .ys(GY - G1R - 11'd8), .t(fcount[6:0]),
+                    .any(sm1_any), .young(sm1_young));
+    ip_smoke u_sm2 (.x(x), .y(y), .xs(g2x), .ys(GY - r2 - 11'd8),  .t(fcount[6:0] + 7'd13),
+                    .any(sm2_any), .young(sm2_young));
+    wire smoke_any   = sm1_any   || sm2_any;
+    wire smoke_young = sm1_young || sm2_young;
+
     // ------------------------------------------------------------------
     // 7. colour: text white (yellow when selected, red when P2 is locked), background dark blue, black outside the picture
     // ------------------------------------------------------------------
     assign rgb = !active ? 6'b00_00_00 :
-                 text_on ? ((locked || oil_txt) ? 6'b11_00_00 : hl ? 6'b11_11_00 : 6'b11_11_11) :
+                 text_on ? ((locked || oil_txt || go_row) ? 6'b11_00_00 : hl ? 6'b11_11_00 : 6'b11_11_11) :
+                 go_box  ? 6'b00_00_00 :
                  (lamp_shape && lamp_on) ? 6'b11_00_00 :
                  (drop0 || drop1 || drop2) ? 6'b11_11_01 :
+                 (smoke_on && smoke_any) ? (smoke_young ? 6'b10_10_10 : 6'b01_01_01) :
                  in1     ? 6'b11_10_00 :
                  in2     ? 6'b01_11_11 :
                            6'b00_00_01;

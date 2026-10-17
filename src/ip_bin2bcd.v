@@ -33,7 +33,7 @@ module ip_bin2bcd #(
             lo  <= bin;
             cnt <= 5'd0;
         end else begin
-            hi  <= {d2, d1, d0, lo[W-1]};
+            hi  <= {d3[2:0], d2, d1, d0, lo[W-1]};     // shift the whole 16 bits left by one
             lo  <= {lo[W-2:0], 1'b0};
             cnt <= cnt + 5'd1;
         end

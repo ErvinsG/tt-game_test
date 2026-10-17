@@ -5,7 +5,7 @@ import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ORDER = ['project.v', 'game_core.v', 'vga_shell.v', 'ip_debounce.v', 'ip_tick.v',
-         'ip_div.v', 'ip_bin2bcd.v', 'ip_font.v', 'ip_polar.v', 'pwm.v']
+         'ip_div.v', 'ip_bin2bcd.v', 'ip_font.v', 'ip_polar.v', 'ip_puff.v', 'ip_smoke.v', 'pwm.v']
 
 out = '// Single-file bundle of src/ for pasting into vga-playground. Generated - edit src/, not this.\n'
 for f in ORDER:

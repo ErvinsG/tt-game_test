@@ -23,6 +23,8 @@ project:
     - "ip_div.v"
     - "ip_font.v"
     - "ip_polar.v"
+    - "ip_puff.v"
+    - "ip_smoke.v"
     - "ip_tick.v"
     - "pwm.v"
     - "project.v"
