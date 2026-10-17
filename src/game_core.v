@@ -26,9 +26,6 @@ module game_core #(
     input  wire        frame,     // one clock pulse per picture
     output wire [5:0]  rgb        // {R[1:0], G[1:0], B[1:0]}
 );
-    // ------------------------------------------------------------------
-    // 1. clean up the four buttons
-    // ------------------------------------------------------------------
     wire left_c, right_c, up_c, down_c;
     ip_debounce #(.N(DB)) db_left  (.clk(clk), .rst_n(rst_n), .noisy(left),  .clean(left_c));
     ip_debounce #(.N(DB)) db_right (.clk(clk), .rst_n(rst_n), .noisy(right), .clean(right_c));
@@ -52,10 +49,12 @@ module game_core #(
             px <= 0; // GRID / 2
             py <= 0;
         end else if (step) begin
-            if (left  && !right && px > 0)           px <= px - 5'd1;
-            else if (right && !left  && px < GRID-1) px <= px + 5'd1;
-            else if (up    && !down  && py > 0)      py <= py - 5'd1;
-            else if (down  && !up    && py < GRID-1) py <= py + 5'd1;
+            // independent x and y updates, so pressing two buttons moves diagonally
+            if (left  && !right)      px <= (px > 0)      ? px - 5'd1 : px;
+            else if (right && !left)  px <= (px < GRID-1) ? px + 5'd1 : px;
+
+            if (up    && !down)       py <= (py > 0)      ? py - 5'd1 : py;
+            else if (down  && !up)    py <= (py < GRID-1) ? py + 5'd1 : py;
         end
     end
 
