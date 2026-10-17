@@ -6,7 +6,7 @@ SIM ?= icarus
 FST ?= -fst # Use more efficient FST format
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
-PROJECT_SOURCES = game_core.v ip_buttons.v ip_octgear.v project.v vga_shell.v
+PROJECT_SOURCES = game_core.v ip_buttons.v ip_gamepad.v project.v vga_shell.v
 
 ifneq ($(GATES),yes)
 

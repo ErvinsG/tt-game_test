@@ -1,42 +1,29 @@
 # Tiny Tapeout project information
 project:
-  title:        "Main_TT"      # Project title
-  author:       "Erviins"      # Your name
-  discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
-  description:  "Gear ratio visualiser: VGA gears + motor PWM"      # One line description of what your project does
-  language:     "Verilog" # other examples include SystemVerilog, Amaranth, VHDL, etc
-  clock_hz:     25175000       # Clock frequency in Hz (or 0 if not applicable)
-
-  # How many tiles your design occupies? A single tile is about 167x108 uM.
-  tiles: "1x1"          # Valid values: 1x1, 1x2, 2x2, 3x2, 4x2, 6x2 or 8x2
-
-  # Your top module name must start with "tt_um_". Make it unique by including your github username:
+  title:        "Grid chase"
+  author:       "Erviins"
+  discord:      ""
+  description:  "20x20 grid: you (dark green) chase a random walker (yellow); when they meet the game stops and the tile turns dark blue"
+  language:     "Verilog"
+  clock_hz:     25175000
+  tiles: "1x1"
   top_module:  "tt_um_ervinsg_game_test"
-
-  # List your project's source files here.
-  # Source files must be in ./src and you must list each source file separately, one per line.
-  # Don't forget to also update `PROJECT_SOURCES` in test/Makefile.
   source_files:
     - "game_core.v"
+    - "ip_gamepad.v"
     - "ip_buttons.v"
-    - "ip_octgear.v"
     - "project.v"
     - "vga_shell.v"
 
-# The pinout of your project. Leave unused pins blank. DO NOT delete or add any pins.
-# This section is for the datasheet/website. Use descriptive names (e.g., RX, TX, MOSI, SCL, SEG_A, etc.).
 pinout:
-  # Inputs
-  ui[0]: "Left button (edit P1: rpm)"
-  ui[1]: "Right button (edit P2: teeth)"
-  ui[2]: "Up button"
-  ui[3]: "Down button"
-  ui[4]: "Select button (clutch)"
-  ui[5]: ""
-  ui[6]: ""
+  ui[0]: "Left"
+  ui[1]: "Right"
+  ui[2]: "Up"
+  ui[3]: "Down"
+  ui[4]: "Gamepad Pmod latch (optional)"
+  ui[5]: "Gamepad Pmod clock (optional)"
+  ui[6]: "Gamepad Pmod data (optional)"
   ui[7]: ""
-
-  # Outputs
   uo[0]: "R1"
   uo[1]: "G1"
   uo[2]: "B1"
@@ -45,9 +32,7 @@ pinout:
   uo[5]: "G0"
   uo[6]: "B0"
   uo[7]: "VGA hsync"
-
-  # Bidirectional pins
-  uio[0]: "Motor PWM"
+  uio[0]: ""
   uio[1]: ""
   uio[2]: ""
   uio[3]: ""
@@ -56,5 +41,4 @@ pinout:
   uio[6]: ""
   uio[7]: ""
 
-# Do not change!
 yaml_version: 6
