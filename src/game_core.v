@@ -5,8 +5,10 @@
 //   * The yellow square runs away. It moves on every 3rd game tick, one cell: along the axis where you are farther
 //     away, sliding along a wall when that way is blocked. In one move out of four it steps in a random direction
 //     instead (a 16 bit LFSR picks it), so it is not completely predictable.
-//   * Fog of war: only a 3 x 3 window of cells (parameter VIS) around you is visible: you stand in its middle cell,
-//     it follows you and stays on the map. The rest of the field is grey fog, so the yellow square can hide in it.
+//   * Fog of war: only a small window of cells around you is visible: you stand in its middle cell, it follows you
+//     and stays on the map. The rest of the field is grey fog, so the yellow square can hide in it. The window starts
+//     at 3 x 3. The buy button (and 4 catches, which it spends) makes it 5 x 5, and again 7 x 7. A cyan square under
+//     the tally in the top left shows each upgrade you have.
 //   * Both squares are 0.8 of a cell (26 x 20 px) so they stay inside their cell.
 //   * When both squares end up in the same cell you have caught it: the catch counter goes up (one golden line
 //     per catch in the top left corner, up to 31), that cell turns dark blue (the latest catch stays marked) and
@@ -19,7 +21,7 @@
 
 module game_core #(
     parameter MOVE = 8,          // pictures per game tick
-    parameter VIS  = 3           // the clear window is VIS x VIS cells (the rest of the 20 x 20 field is fog)
+    parameter COST = 4           // catches (coins) per fog upgrade
 ) (
     input  wire        clk,
     input  wire        rst_n,
@@ -27,6 +29,7 @@ module game_core #(
     input  wire        right,
     input  wire        up,
     input  wire        down,
+    input  wire        buy,       // raw buy button: spend COST catches on a bigger fog window
     input  wire [9:0]  x,
     input  wire [9:0]  y,
     input  wire        active,
@@ -36,11 +39,12 @@ module game_core #(
     // ------------------------------------------------------------------
     // 1. buttons, sampled once per picture
     // ------------------------------------------------------------------
-    wire left_c, right_c, up_c, down_c;
+    wire left_c, right_c, up_c, down_c, buy_c;
     ip_btn db_l (.clk(clk), .rst_n(rst_n), .tick(frame), .raw(left),  .clean(left_c));
     ip_btn db_r (.clk(clk), .rst_n(rst_n), .tick(frame), .raw(right), .clean(right_c));
     ip_btn db_u (.clk(clk), .rst_n(rst_n), .tick(frame), .raw(up),    .clean(up_c));
     ip_btn db_d (.clk(clk), .rst_n(rst_n), .tick(frame), .raw(down),  .clean(down_c));
+    ip_btn db_b (.clk(clk), .rst_n(rst_n), .tick(frame), .raw(buy),   .clean(buy_c));
 
     // ------------------------------------------------------------------
     // 2. game tick every MOVE pictures; the random square moves on every 3rd tick
@@ -76,7 +80,10 @@ module game_core #(
     reg        chk;
     wire       same  = (px == rx) && (py == ry);
     wire       gotcha = chk && same;
-    reg [4:0]  catches;       // how many times the walker has been caught (saturates at 31)
+    reg [4:0]  catches;       // coins: how many times the walker has been caught, minus what was spent (max 31)
+    reg [1:0]  level;         // fog upgrades bought: 0 = 3 x 3, 1 = 5 x 5, 2 = 7 x 7
+    reg        buy_d;
+    wire       buy_ok = buy_c && !buy_d && (catches >= COST) && (level != 2'd2);   // a press with enough coins
     reg [4:0]  bx, by;        // the cell of the latest catch (it stays dark blue); column 31 = none yet
 
     // where the walker respawns: on the other half of the field (columns 14..19 or 0..5), random row
@@ -107,11 +114,16 @@ module game_core #(
             rx <= 5'd16; ry <= 5'd10;
             chk <= 1'b0;
             catches <= 5'd0;
+            level   <= 2'd0;
+            buy_d   <= 1'b0;
             bx <= 5'd31; by <= 5'd31;
         end else begin
-            chk <= tick;                         // the positions are updated now, look at them next clock
-            if (gotcha) begin                    // caught: count it, mark the cell, respawn the walker
-                if (catches != 5'd31) catches <= catches + 5'd1;
+            chk   <= tick;                       // the positions are updated now, look at them next clock
+            buy_d <= buy_c;
+            // coins: +1 for a catch (up to 31), -COST for an upgrade (both can happen in the same clock)
+            catches <= catches + {4'b0, gotcha && (catches != 5'd31)} - (buy_ok ? COST : 5'd0);
+            if (buy_ok) level <= level + 2'd1;
+            if (gotcha) begin                    // caught: mark the cell, respawn the walker
                 bx <= px; by <= py;
                 rx <= nx; ry <= ny;
             end
@@ -169,18 +181,25 @@ module game_core #(
 
     // catch counter: one golden line (4 px wide, 24 px tall) per catch, 8 px apart, top left corner, drawn over the fog
     wire [9:0] xm    = x - 10'd8;
+    // fog upgrades bought: one cyan square (8 x 8 px) per level under the tally, y = 40..47
+    wire       lvl_sq = (y[9:4] == 6'd2) && (y[3] == 1'b1) && (((x[9:4] == 6'd0) && (x[3] == 1'b1) && (level != 2'd0)) ||
+                                                              ((x[9:4] == 6'd1) && (x[3] == 1'b1) && (level == 2'd2)));
     wire       tally = (x[9:3] != 7'd0) && (y[9:5] == 5'd0) && (y[4:3] != 2'd0) && !xm[2] && (xm[9:3] < {2'b00, catches});
 
-    // fog of war: a VIS x VIS window of cells with the human in the middle (kept on the map)
-    localparam [4:0] HALF = (VIS - 1) / 2;            // cells on each side of the human
-    localparam [4:0] MAXW = 20 - VIS;                 // last possible window start
-    wire [4:0] wx = (px <= HALF) ? 5'd0 : (px > MAXW + HALF) ? MAXW : px - HALF;
-    wire [4:0] wy = (py <= HALF) ? 5'd0 : (py > MAXW + HALF) ? MAXW : py - HALF;
-    wire in_win = ((cx - wx) < VIS) && ((cy - wy) < VIS);
+    // fog of war: a (2*half+1) x (2*half+1) window of cells with the human in the middle (kept on the map);
+    // half = 1, 2, 3 for 3 x 3, 5 x 5, 7 x 7
+    wire [2:0] half = {1'b0, level} + 3'd1;
+    wire [4:0] vis  = {1'b0, half, 1'b1};                         // 3, 5 or 7
+    wire [4:0] maxw = 5'd19 - {1'b0, half, 1'b0};                 // last possible window start: 17, 15 or 13
+    wire [4:0] hlf5 = {2'b00, half};
+    wire [4:0] wx = (px <= hlf5) ? 5'd0 : (px > 5'd19 - hlf5) ? maxw : px - hlf5;
+    wire [4:0] wy = (py <= hlf5) ? 5'd0 : (py > 5'd19 - hlf5) ? maxw : py - hlf5;
+    wire in_win = ((cx - wx) < vis) && ((cy - wy) < vis);
     wire grid   = (xin == 5'd0) || (yin == 5'd0);     // thin cell borders inside the clear window
 
     assign rgb = !active          ? 6'b00_00_00 :     // blanking
-                 tally            ? 6'b11_10_00 :     // catch counter: golden lines
+                 tally            ? 6'b11_10_00 :     // coins: golden lines
+                 lvl_sq           ? 6'b00_11_11 :     // fog upgrades: cyan squares
                  !in_win          ? ((x[2] ^ y[2]) ? 6'b10_10_10 : 6'b01_01_01) :   // fog: grey dither
                  (hum_here && sq) ? 6'b00_01_00 :     // human: dark green
                  (rng_here && sq) ? 6'b11_11_00 :     // walker: yellow

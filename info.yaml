@@ -3,7 +3,7 @@ project:
   title:        "Grid chase"
   author:       "Erviins"
   discord:      ""
-  description:  "20x20 grid in fog (3x3 visible): chase a yellow square that runs away; every catch adds a golden tally line and respawns it"
+  description:  "20x20 grid in fog: chase a runaway square, every catch is a coin; spend 4 coins to widen your view from 3x3 to 5x5 to 7x7"
   language:     "Verilog"
   clock_hz:     25175000
   tiles: "1x1"
@@ -23,7 +23,7 @@ pinout:
   ui[4]: "Gamepad Pmod latch (optional)"
   ui[5]: "Gamepad Pmod clock (optional)"
   ui[6]: "Gamepad Pmod data (optional)"
-  ui[7]: ""
+  ui[7]: "Buy bigger fog window (4 catches)"
   uo[0]: "R1"
   uo[1]: "G1"
   uo[2]: "B1"

@@ -8,7 +8,7 @@
 //   B, Y, Select, Start, Up, Down, Left, Right, A, X, L, R
 // Controller 1 is the LAST 12 bits before the latch pulse (a single controller sends only these 12 bits).
 // So: every rising clock edge shifts the data bit into a 12 bit register, and on the rising edge of the latch
-// the register holds controller 1: bit 7 = Up, 6 = Down, 5 = Left, 4 = Right.
+// the register holds controller 1: bit 7 = Up, 6 = Down, 5 = Left, 4 = Right, 3 = A (the buy button).
 // All twelve bits high means "no controller connected": the directions then stay low.
 //
 // Each input goes through a two flip-flop synchroniser.
@@ -23,7 +23,8 @@ module ip_gamepad (
     output reg  left,
     output reg  right,
     output reg  up,
-    output reg  down
+    output reg  down,
+    output reg  a
 );
     reg [1:0]  ls, cs, ds;       // synchronisers
     reg        lp, cp;           // previous synchronised latch / clock, for edge detection
@@ -34,7 +35,7 @@ module ip_gamepad (
             ls <= 2'b00; cs <= 2'b00; ds <= 2'b00;
             lp <= 1'b0;  cp <= 1'b0;
             sh <= 12'hFFF;                           // "no controller" until the first burst arrives
-            up <= 1'b0;  down <= 1'b0;  left <= 1'b0;  right <= 1'b0;
+            up <= 1'b0;  down <= 1'b0;  left <= 1'b0;  right <= 1'b0;  a <= 1'b0;
         end else begin
             ls <= {ls[0], latch};
             cs <= {cs[0], pclk};
@@ -47,6 +48,7 @@ module ip_gamepad (
                 down  <= !(&sh) && sh[6];
                 left  <= !(&sh) && sh[5];
                 right <= !(&sh) && sh[4];
+                a     <= !(&sh) && sh[3];
             end
         end
     end
