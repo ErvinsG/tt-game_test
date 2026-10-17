@@ -11,6 +11,7 @@ out = '// Single-file bundle of src/ for pasting into vga-playground. Generated 
 for f in ORDER:
     t = (ROOT / 'src' / f).read_text(encoding='utf-8').replace('\r\n', '\n')
     t = t.replace('`default_nettype none\n', '')
+    t = t.replace('module tt_um_ervinsg_game_test', 'module tt_um_vga_example')   # the playground's top module name
     out += f'// ===== {f} =====\n{t}\n'
 (ROOT / 'playground' / 'project_all.v').write_text(out, encoding='utf-8', newline='\n')
 print('wrote playground/project_all.v')
