@@ -1,4 +1,4 @@
-// Gear ratio demo: parameters, rpm2, PWM, text and two meshing gears on screen.
+// Gear ratio demo: parameters, PWM, text and two meshing gears on screen.
 //
 // Oil: at 5 h or less an OIL marker blinks and the clutch (Select) adds oil (marker turns green, counter back to 100 h).
 // At 0 h it is GAME OVER: motor forced to 0 rpm, controls locked; only reset restarts.
@@ -95,11 +95,10 @@ module game_core #(
         end
     end
 
-    // rpm1 = p1 * 25
-    wire [10:0] rpm1 = {p1, 4'b0} + {p1, 3'b0} + p1;
+    // rpm1 = p1 * 25 = 100 * (p1 / 4) + 25 * (p1 mod 4): shown as the digits of p1 / 4 followed by 00, 25, 50 or 75
 
     // ------------------------------------------------------------------
-    // 3. PWM: duty = rpm1 / 2000 * 255 = p1 * 3.1875 (p1 = 80 -> 255)
+    // 3. PWM: duty = rpm / 2000 * 255 = p1 * 3.1875 (p1 = 80 -> 255)
     // ------------------------------------------------------------------
     wire [7:0] duty = {p1, 1'b0} + p1 + {3'b0, p1[6:3]} + {4'b0, p1[6:4]};
     pwm #(.PRE(8)) u_pwm (.clk(clk), .rst_n(rst_n), .duty(duty), .pwm_out(pwm_out));
@@ -149,10 +148,10 @@ module game_core #(
     // ------------------------------------------------------------------
     // 4. binary -> decimal digits
     // ------------------------------------------------------------------
-    wire [15:0] bcd1;
+    wire [7:0]  bcdq;
     wire [7:0]  bcdt;
     wire [11:0] bcdh12;
-    ip_bcd3 u_bcd (.clk(clk), .rst_n(rst_n), .a(rpm1), .b(p2), .c(hours), .ra(bcd1), .rb(bcdt), .rc(bcdh12));
+    ip_bcd3 u_bcd (.clk(clk), .rst_n(rst_n), .a({2'b00, p1[6:2]}), .b(p2), .c(hours), .ra(bcdq), .rb(bcdt), .rc(bcdh12));
     wire [15:0] bcdh = {4'b0, bcdh12};
 
     // ------------------------------------------------------------------
@@ -168,7 +167,10 @@ module game_core #(
     wire [2:0] gy = y[4:2];
 
     // leading zeros are blanked
-    wire [3:0] a3 = bcd1[15:12], a2 = bcd1[11:8], a1 = bcd1[7:4], a0 = bcd1[3:0];
+    wire [3:0] a3 = bcdq[7:4];
+    wire [3:0] a2 = bcdq[3:0];
+    wire [3:0] a1 = (p1[1:0] == 2'd1) ? 4'd2 : (p1[1:0] == 2'd2) ? 4'd5 : (p1[1:0] == 2'd3) ? 4'd7 : 4'd0;
+    wire [3:0] a0 = p1[0] ? 4'd5 : 4'd0;
     wire [3:0] A3 = (a3 == 0) ? 4'd15 : a3;
     wire [3:0] A2 = (a3 == 0 && a2 == 0) ? 4'd15 : a2;
     wire [3:0] A1 = (a3 == 0 && a2 == 0 && a1 == 0) ? 4'd15 : a1;
@@ -246,83 +248,53 @@ module game_core #(
 
 
     // ------------------------------------------------------------------
-    // 6. the gears
-    //    Gear 1 is fixed: 12 teeth, pitch radius G1R, centre (G1X, GY).
-    //    Gear 2 has p2 teeth and the SAME tooth size, so its pitch radius is p2 * 15/8 px and its
-    //    centre sits G1R + r2 to the right of gear 1: the teeth really mesh at every tooth count.
-    //    Gear 1 turns by alpha (65536 = one turn); the speed grows with rpm1, but is scaled down so
-    //    2000 rpm is still readable on a 60 Hz picture.
-    //    Gear 2 needs no angle of its own: meshing means  N * alpha2 = -12 * alpha1, so its tooth
-    //    phase is simply  N * theta + 12 * alpha1 (+ half a tooth when N is even).
-    //    Radii: 12 teeth -> 22 px, 64 teeth -> 120 px, so offsets stay below 64 (gear 1) / 128 (gear 2)
-    //    and the polar converters can use small datapaths.
+    // 6. the gears: two octagons with sliding tooth bars (ip_octgear.v)
+    //    Gear 1 is fixed: 12 teeth, inradius R1 = 2.414 * 12 = 29, centre (G1X, GY).
+    //    Gear 2 has p2 teeth, the same tooth pitch (16 px), so its inradius is 2.414 * p2 and its centre
+    //    sits R1 + R2 to the right of gear 1: the flat edges touch and the teeth mesh at every tooth count.
+    //    rot_acc is the rotation in px (8 fraction bits); the speed grows with rpm1 up to 6.25 px per
+    //    picture (0.39 tooth), so 2000 rpm is still readable on a 60 Hz picture.
+    //    Gear 2 turns the other way and is half a tooth off, so its teeth fall into the gaps of gear 1.
     // ------------------------------------------------------------------
     localparam [10:0] G1X = 11'd150;
     localparam [10:0] GY  = 11'd288;
-    localparam [10:0] G1R = 11'd22;
+    localparam [8:0]  R1  = 9'd29;
 
-    reg [15:0] alpha;
-    wire [11:0] inc = {p1, 5'b0} - {p1, 2'b0};            // p1 * 28 -> up to 0.034 turn per picture
+    reg [11:0] rot_acc;
+    wire [10:0] inc = {p1, 4'b0} + {p1, 2'b0};            // p1 * 20
     always @(posedge clk) begin
-        if (!rst_n)      alpha <= 16'd0;
-        else if (frame)  alpha <= alpha + {4'b0, inc};
+        if (!rst_n)      rot_acc <= 12'd0;
+        else if (frame)  rot_acc <= rot_acc + {1'b0, inc};
     end
-    wire [11:0] a12 = alpha[15:4];
+    wire [3:0] rot1 = rot_acc[11:8];
+    wire [3:0] n9   = p2[3:0] + {p2[0], 3'b000};          // 9 * N mod 16
+    wire [3:0] rot2 = 4'd8 - n9 - rot1;
 
-    // pixel offsets, looking 9 clocks ahead to cover the CORDIC pipeline latency
-    wire [10:0] xa  = {1'b0, x} + 11'd9;
-    wire [10:0] r15 = {p2, 4'b0} - {4'b0, p2};            // 15 * p2
-    wire [10:0] r2  = {3'b0, r15[10:3]};                  // pitch radius of gear 2 = 15 * p2 / 8
+    wire [8:0]  pn  = {2'b00, p2};
+    wire [8:0]  r2  = (pn << 1) + (pn >> 2) + (pn >> 3) + (pn >> 5) + (pn >> 6);   // inradius of gear 2
+    wire [10:0] g2x = G1X + {2'b00, R1} + {2'b00, r2};
+
     wire [10:0] dy  = {1'b0, y} - GY;
-
-    // gear 1
-    wire [7:0]  rk1;
-    wire [11:0] th1;
-    wire        far1;
-    ip_polar #(.M(6)) u_pol1 (.clk(clk), .dx(xa - G1X), .dy(dy), .rk(rk1), .th(th1), .far(far1));
-
-    wire [11:0] t1   = th1 - a12;
-    wire [11:0] phi1 = {t1[8:0], 3'b0} + {t1[9:0], 2'b0};       // 12 * t1, mod 4096
-    wire [11:0] ps1  = phi1 + 12'd819;                           // tooth = +-20 % of the pitch
-    wire        tooth1 = ps1 < 12'd1638;
-
-    // radius thresholds, scaled by the CORDIC gain 1.6468: tip = r + 3, root = r - 5, hub hole = 6
-    wire [10:0] k1tip, k1root, k1hole;
-    ip_kmul u_k1a (.t(9'd25), .k(k1tip));
-    ip_kmul u_k1b (.t(9'd17), .k(k1root));
-    ip_kmul u_k1c (.t(9'd6),  .k(k1hole));
-    wire in1 = !far1 && ({3'b0, rk1} > k1hole) && (({3'b0, rk1} < k1root) || (({3'b0, rk1} < k1tip) && tooth1));
-
-    // gear 2
-    wire [8:0]  rk2;
-    wire [11:0] th2;
-    wire        far2;
-    wire [10:0] g2x = G1X + G1R + r2;
-    ip_polar #(.M(7)) u_pol2 (.clk(clk), .dx(xa - g2x), .dy(dy), .rk(rk2), .th(th2), .far(far2));
-
-    wire [17:0] m2   = th2 * p2;
-    wire [14:0] a12x = {a12, 3'b0} + {a12, 2'b0};                // 12 * alpha, mod 4096 below
-    wire [11:0] phi2 = m2[11:0] + a12x[11:0] + {~p2[0], 11'b0};
-    wire [11:0] ps2  = phi2 + 12'd819;
-    wire        tooth2 = ps2 < 12'd1638;
-
-    // one gain multiply for gear 2, the other thresholds are fixed offsets from it (K*3 = 5, K*5 = 8)
-    wire [10:0] kr2;
-    ip_kmul u_k2 (.t(r2[8:0]), .k(kr2));
-    wire [10:0] k2tip  = kr2 + 11'd5;
-    wire [10:0] k2root = kr2 - 11'd8;
-    wire [10:0] k2hole = {2'b0, kr2[10:2]};                      // hub hole = r / 4
-    wire in2 = !far2 && ({2'b0, rk2} > k2hole) && (({2'b0, rk2} < k2root) || (({2'b0, rk2} < k2tip) && tooth2));
+    wire in1, in2;
+    ip_octgear u_g1 (.dx({1'b0, x} - G1X), .dy(dy), .root(R1 - 9'd4), .tip(R1 + 9'd2),
+                     .n4(4'd12), .rot(rot1), .hit(in1));
+    ip_octgear u_g2 (.dx({1'b0, x} - g2x), .dy(dy), .root(r2 - 9'd4), .tip(r2 + 9'd2),
+                     .n4(p2[3:0]), .rot(rot2), .hit(in2));
 
     // ------------------------------------------------------------------
     // 7. colour: text white (yellow when selected, red when P2 is locked), background dark blue, black outside the picture
     // ------------------------------------------------------------------
     wire oil_mark = (cy == 4'd0) && refill;                  // green OIL while the oil goes in
 
-    assign rgb = !active ? 6'b00_00_00 :
+    wire [5:0] rgb_d = !active ? 6'b00_00_00 :
                  text_on ? (oil_mark ? 6'b00_11_00 : (locked || oil_txt || go_row || cy == 4'd0) ? 6'b11_00_00 : hl ? 6'b11_11_00 : 6'b11_11_11) :
                  go_box  ? 6'b00_00_00 :
                  in1     ? 6'b11_10_00 :
                  in2     ? 6'b01_11_11 :
                            6'b00_00_01;
+
+    // one register on the colour: the whole picture moves one pixel, but the long gear logic gets a full clock
+    reg [5:0] rgb_q;
+    always @(posedge clk) rgb_q <= rgb_d;
+    assign rgb = rgb_q;
 endmodule
