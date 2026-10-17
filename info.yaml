@@ -3,7 +3,7 @@ project:
   title:        "Main_TT"      # Project title
   author:       "Erviins"      # Your name
   discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
-  description:  "Test project"      # One line description of what your project does
+  description:  "Gear ratio visualiser: VGA gears + motor PWM"      # One line description of what your project does
   language:     "Verilog" # other examples include SystemVerilog, Amaranth, VHDL, etc
   clock_hz:     25175000       # Clock frequency in Hz (or 0 if not applicable)
 
@@ -18,10 +18,13 @@ project:
   # Don't forget to also update `PROJECT_SOURCES` in test/Makefile.
   source_files:
     - "game_core.v"
+    - "ip_bin2bcd.v"
     - "ip_debounce.v"
-    - "ip_paddle.v"
-    - "ip_rect.v"
+    - "ip_div.v"
+    - "ip_font.v"
+    - "ip_polar.v"
     - "ip_tick.v"
+    - "pwm.v"
     - "project.v"
     - "vga_shell.v"
 
@@ -29,11 +32,11 @@ project:
 # This section is for the datasheet/website. Use descriptive names (e.g., RX, TX, MOSI, SCL, SEG_A, etc.).
 pinout:
   # Inputs
-  ui[0]: "Left button"
-  ui[1]: "Right button"
-  ui[2]: ""
-  ui[3]: ""
-  ui[4]: ""
+  ui[0]: "Left button (edit P1: rpm)"
+  ui[1]: "Right button (edit P2: teeth)"
+  ui[2]: "Up button"
+  ui[3]: "Down button"
+  ui[4]: "Select button (clutch)"
   ui[5]: ""
   ui[6]: ""
   ui[7]: ""
@@ -49,7 +52,7 @@ pinout:
   uo[7]: "VGA hsync"
 
   # Bidirectional pins
-  uio[0]: ""
+  uio[0]: "Motor PWM"
   uio[1]: ""
   uio[2]: ""
   uio[3]: ""

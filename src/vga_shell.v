@@ -36,16 +36,3 @@ module vga_sync (
     assign frame  = (hc == 10'd640) && (vc == 10'd480);
 endmodule
 
-module vga_level_bar (
-    input  wire [9:0] x,
-    input  wire [9:0] y,
-    input  wire       active,
-    input  wire [7:0] level,
-    output wire [5:0] rgb       // {R[1:0], G[1:0], B[1:0]}
-);
-    wire [9:0] from_bottom = 10'd479 - y;
-    wire       in_bar      = (x >= 10'd256) && (x < 10'd384);
-    wire       lit         = in_bar && ({1'b0, level, 1'b0} > from_bottom);
-
-    assign rgb = !active ? 6'b000000 : lit ? 6'b001100 : 6'b000001;
-endmodule
