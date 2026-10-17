@@ -23,29 +23,29 @@ module ip_octgear (
 );
     wire sx = dx[10];
     wire sy = dy[10];
-    // both offsets must be inside -256 .. 255 (all bits from 10 down to 8 equal)
-    wire in_x = (&dx[10:8]) || !(|dx[10:8]);
-    wire in_y = (&dy[10:8]) || !(|dy[10:8]);
+    // both offsets must be inside -255 .. 255, so an 8 bit magnitude is enough
+    wire in_x = !(|dx[10:8]) || ((&dx[10:8]) && (|dx[7:0]));
+    wire in_y = !(|dy[10:8]) || ((&dy[10:8]) && (|dy[7:0]));
 
-    wire [8:0] a = sx ? (9'd0 - dx[8:0]) : dx[8:0];
-    wire [8:0] b = sy ? (9'd0 - dy[8:0]) : dy[8:0];
+    wire [7:0] a = sx ? (8'd0 - dx[7:0]) : dx[7:0];
+    wire [7:0] b = sy ? (8'd0 - dy[7:0]) : dy[7:0];
 
     wire       a_ge_b = (a >= b);
-    wire [8:0] hi = a_ge_b ? a : b;
-    wire [8:0] lo = a_ge_b ? b : a;
-    wire [12:0] lo12 = {1'b0, lo, 3'b000} + {2'b00, lo, 2'b00};     // 12 * lo
-    wire [12:0] hi5  = {2'b00, hi, 2'b00} + {4'b0000, hi};          // 5 * hi
+    wire [7:0] hi = a_ge_b ? a : b;
+    wire [7:0] lo = a_ge_b ? b : a;
+    wire [11:0] lo12 = {1'b0, lo, 3'b000} + {2'b00, lo, 2'b00};     // 12 * lo
+    wire [11:0] hi5  = {2'b00, hi, 2'b00} + {4'b0000, hi};          // 5 * hi
     wire axis = (lo12 <= hi5);
     wire xreg = axis && a_ge_b;
     wire yreg = axis && !a_ge_b;
 
     // diagonal distance (a+b)*45/64
-    wire [9:0] sum = {1'b0, a} + {1'b0, b};
-    wire [9:0] dd  = {1'b0, sum[9:1]} + {3'b000, sum[9:3]} + {4'b0000, sum[9:4]} + {6'b000000, sum[9:6]};
-    wire [9:0] d   = axis ? {1'b0, hi} : dd;
+    wire [8:0] sum = {1'b0, a} + {1'b0, b};
+    wire [8:0] dd  = {1'b0, sum[8:1]} + {3'b000, sum[8:3]} + {4'b0000, sum[8:4]} + {6'b000000, sum[8:6]};
+    wire [8:0] d   = axis ? {1'b0, hi} : dd;
 
     // diagonal phase term: (b-a)*45/64 mod 16
-    wire [9:0] e    = {1'b0, b} - {1'b0, a};
+    wire [9:0] e    = {2'b00, b} - {2'b00, a};
     wire [9:0] prod = {e[4:0], 5'b00000} + {e[6:0], 3'b000} + {e[7:0], 2'b00} + e;
     wire [3:0] q    = prod[9:6];
 
@@ -63,7 +63,5 @@ module ip_octgear (
     wire [3:0] ph    = base + term + rot;
     wire       tooth = (ph >= 4'd4) && (ph < 4'd9);
 
-    wire [9:0] root10 = {1'b0, root};
-    wire [9:0] tip10  = {1'b0, tip};
-    assign hit = in_x && in_y && (d < tip10) && ((d < root10) || tooth);
+    assign hit = in_x && in_y && (d < tip) && ((d < root) || tooth);
 endmodule

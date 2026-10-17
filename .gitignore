@@ -13,5 +13,6 @@ test/results.xml
 test/gate_level_netlist.v
 ProjectPlan.md
 /playground
-/test
+/test/sim
 /tools
+/archive
