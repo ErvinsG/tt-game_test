@@ -261,16 +261,18 @@ module game_core #(
     // ------------------------------------------------------------------
     // 6. the gears
     //    Gear 1 is fixed: 12 teeth, pitch radius G1R, centre (G1X, GY).
-    //    Gear 2 has p2 teeth and the SAME tooth size, so its pitch radius is p2 * 11/4 px and its
+    //    Gear 2 has p2 teeth and the SAME tooth size, so its pitch radius is p2 * 15/8 px and its
     //    centre sits G1R + r2 to the right of gear 1: the teeth really mesh at every tooth count.
     //    Gear 1 turns by alpha (65536 = one turn); the speed grows with rpm1, but is scaled down so
     //    2000 rpm is still readable on a 60 Hz picture.
     //    Gear 2 needs no angle of its own: meshing means  N * alpha2 = -12 * alpha1, so its tooth
     //    phase is simply  N * theta + 12 * alpha1 (+ half a tooth when N is even).
+    //    Radii: 12 teeth -> 22 px, 64 teeth -> 120 px, so offsets stay below 64 (gear 1) / 128 (gear 2)
+    //    and the polar converters can use small datapaths.
     // ------------------------------------------------------------------
     localparam [10:0] G1X = 11'd150;
     localparam [10:0] GY  = 11'd288;
-    localparam [10:0] G1R = 11'd33;
+    localparam [10:0] G1R = 11'd22;
 
     reg [15:0] alpha;
     wire [11:0] inc = {p1, 5'b0} - {p1, 2'b0};            // p1 * 28 -> up to 0.034 turn per picture
@@ -282,33 +284,34 @@ module game_core #(
 
     // pixel offsets, looking 9 clocks ahead to cover the CORDIC pipeline latency
     wire [10:0] xa  = {1'b0, x} + 11'd9;
-    wire [10:0] r11 = {1'b0, p2, 3'b0} + {3'b0, p2, 1'b0} + {4'b0, p2};   // 11 * p2
-    wire [10:0] r2  = {2'b0, r11[10:2]};                                  // pitch radius of gear 2
+    wire [10:0] r15 = {p2, 4'b0} - {4'b0, p2};            // 15 * p2
+    wire [10:0] r2  = {3'b0, r15[10:3]};                  // pitch radius of gear 2 = 15 * p2 / 8
     wire [10:0] dy  = {1'b0, y} - GY;
 
     // gear 1
-    wire [10:0] rk1;
+    wire [7:0]  rk1;
     wire [11:0] th1;
     wire        far1;
-    ip_polar u_pol1 (.clk(clk), .dx(xa - G1X), .dy(dy), .rk(rk1), .th(th1), .far(far1));
+    ip_polar #(.M(6)) u_pol1 (.clk(clk), .dx(xa - G1X), .dy(dy), .rk(rk1), .th(th1), .far(far1));
 
     wire [11:0] t1   = th1 - a12;
     wire [11:0] phi1 = {t1[8:0], 3'b0} + {t1[9:0], 2'b0};       // 12 * t1, mod 4096
     wire [11:0] ps1  = phi1 + 12'd819;                           // tooth = +-20 % of the pitch
     wire        tooth1 = ps1 < 12'd1638;
 
+    // radius thresholds, scaled by the CORDIC gain 1.6468: tip = r + 3, root = r - 5, hub hole = 6
     wire [10:0] k1tip, k1root, k1hole;
-    ip_kmul u_k1a (.t(9'd37), .k(k1tip));
-    ip_kmul u_k1b (.t(9'd28), .k(k1root));
-    ip_kmul u_k1c (.t(9'd10), .k(k1hole));
-    wire in1 = !far1 && (rk1 > k1hole) && ((rk1 < k1root) || ((rk1 < k1tip) && tooth1));
+    ip_kmul u_k1a (.t(9'd25), .k(k1tip));
+    ip_kmul u_k1b (.t(9'd17), .k(k1root));
+    ip_kmul u_k1c (.t(9'd6),  .k(k1hole));
+    wire in1 = !far1 && ({3'b0, rk1} > k1hole) && (({3'b0, rk1} < k1root) || (({3'b0, rk1} < k1tip) && tooth1));
 
     // gear 2
-    wire [10:0] rk2;
+    wire [8:0]  rk2;
     wire [11:0] th2;
     wire        far2;
     wire [10:0] g2x = G1X + G1R + r2;
-    ip_polar u_pol2 (.clk(clk), .dx(xa - g2x), .dy(dy), .rk(rk2), .th(th2), .far(far2));
+    ip_polar #(.M(7)) u_pol2 (.clk(clk), .dx(xa - g2x), .dy(dy), .rk(rk2), .th(th2), .far(far2));
 
     wire [17:0] m2   = th2 * p2;
     wire [14:0] a12x = {a12, 3'b0} + {a12, 2'b0};                // 12 * alpha, mod 4096 below
@@ -316,14 +319,13 @@ module game_core #(
     wire [11:0] ps2  = phi2 + 12'd819;
     wire        tooth2 = ps2 < 12'd1638;
 
-    wire [8:0]  r2t = r2[8:0] + 9'd4;
-    wire [8:0]  r2r = r2[8:0] - 9'd5;
-    wire [8:0]  r2h = {2'b0, r2[8:2]};
-    wire [10:0] k2tip, k2root, k2hole;
-    ip_kmul u_k2a (.t(r2t), .k(k2tip));
-    ip_kmul u_k2b (.t(r2r), .k(k2root));
-    ip_kmul u_k2c (.t(r2h), .k(k2hole));
-    wire in2 = !far2 && (rk2 > k2hole) && ((rk2 < k2root) || ((rk2 < k2tip) && tooth2));
+    // one gain multiply for gear 2, the other thresholds are fixed offsets from it (K*3 = 5, K*5 = 8)
+    wire [10:0] kr2;
+    ip_kmul u_k2 (.t(r2[8:0]), .k(kr2));
+    wire [10:0] k2tip  = kr2 + 11'd5;
+    wire [10:0] k2root = kr2 - 11'd8;
+    wire [10:0] k2hole = {2'b0, kr2[10:2]};                      // hub hole = r / 4
+    wire in2 = !far2 && ({2'b0, rk2} > k2hole) && (({2'b0, rk2} < k2root) || (({2'b0, rk2} < k2tip) && tooth2));
 
     // ------------------------------------------------------------------
     // 6b. oil can lamp (top right) and the oil drops falling into the gear mesh
@@ -350,13 +352,13 @@ module game_core #(
     wire drop1 = refill && drop_x && (ph1 <= 8'd170) && (y >= dy1) && (y < dy1 + 10'd16);
     wire drop2 = refill && drop_x && (ph2 <= 8'd170) && (y >= dy2) && (y < dy2 + 10'd16);
 
-    // smoke: ten grey puffs (two columns of five) rise from the top of both gears at GAME OVER
+    // smoke: a noisy plume rises from the top of each gear at GAME OVER
     wire smoke_on = oil_low;
     wire sm1_any, sm1_young, sm2_any, sm2_young;
-    ip_smoke u_sm1 (.x(x), .y(y), .xs(G1X), .ys(GY - G1R - 11'd8), .t(fcount[6:0]),
-                    .any(sm1_any), .young(sm1_young));
-    ip_smoke u_sm2 (.x(x), .y(y), .xs(g2x), .ys(GY - r2 - 11'd8),  .t(fcount[6:0] + 7'd13),
-                    .any(sm2_any), .young(sm2_young));
+    ip_plume u_sm1 (.x(x), .y(y), .xs(G1X), .ys(GY - G1R - 11'd6), .t(fcount),
+                    .on(sm1_any), .young(sm1_young));
+    ip_plume u_sm2 (.x(x), .y(y), .xs(g2x), .ys(GY - r2  - 11'd6), .t(fcount + 8'd37),
+                    .on(sm2_any), .young(sm2_young));
     wire smoke_any   = sm1_any   || sm2_any;
     wire smoke_young = sm1_young || sm2_young;
 
