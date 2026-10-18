@@ -20,9 +20,9 @@ module vga_sync (
         if (!rst_n) begin
             hc <= 10'd0;
             vc <= 10'd0;
-        end else if (hc == 10'd799) begin
+        end else if (hc[9] && hc[8] && (&hc[4:0])) begin   // hc == 799 (hc never goes higher)
             hc <= 10'd0;
-            vc <= (vc == 10'd524) ? 10'd0 : vc + 10'd1;
+            vc <= (vc[9] && vc[3] && vc[2]) ? 10'd0 : vc + 10'd1;   // vc == 524
         end else begin
             hc <= hc + 10'd1;
         end
@@ -30,9 +30,9 @@ module vga_sync (
 
     assign x      = hc;
     assign y      = vc;
-    assign active = (hc < 10'd640) && (vc < 10'd480);
+    assign active = !(hc[9] && (hc[8] || hc[7])) && !(vc[9] || (&vc[8:5]));   // hc < 640 and vc < 480
     assign hsync  = ~((hc >= 10'd656) && (hc < 10'd752));
     assign vsync  = ~((vc >= 10'd490) && (vc < 10'd492));
-    assign frame  = (hc == 10'd640) && (vc == 10'd480);
+    assign frame  = hc[9] && hc[7] && !(|hc[6:0]) && (&vc[8:5]) && !(|vc[4:0]);   // hc == 640 and vc == 480
 endmodule
 

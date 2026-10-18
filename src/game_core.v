@@ -9,7 +9,7 @@
 //     and stays on the map. The rest of the field is grey fog, so the yellow square can hide in it. The window starts
 //     at 3 x 3. The buy button (and 4 catches, which it spends) makes it 5 x 5, and again 7 x 7. A cyan square under
 //     the tally in the top left shows each upgrade you have.
-//   * Last level: at 7 x 7 the buy button costs CUP (10) catches and wins the game: everything stops and a golden
+//   * Last level: at 7 x 7 the buy button costs CUP (8) catches and wins the game: everything stops and a golden
 //     trophy is drawn in the middle of the screen. The second cyan square turns gold when the cup is affordable.
 //   * Tile blockers: red cells nobody can enter (you stay where you are, the yellow square walks around them). There
 //     are about BN0, BN1, BN2 of them at fog level 0, 1, 2 (3 x 3, 5 x 5, 7 x 7; currently 10, 35, 50) and they
@@ -31,7 +31,7 @@
 module game_core #(
     parameter MOVE = 8,          // pictures per game tick
     parameter COST = 4,          // catches (coins) per fog upgrade
-    parameter CUP  = 10,         // catches (coins) for the trophy at the last level
+    parameter CUP  = 8,         // catches (coins) for the trophy at the last level
     parameter COINS0 = 0,       // coins at reset: 0 for the real game, more for testing (max 31)
     parameter BLOCKS = 1,        // 1 = tile blockers on, 0 = off
     parameter BN0 = 10,          // about this many blockers at fog level 0 (3 x 3)
@@ -82,11 +82,11 @@ module game_core #(
         if (commit) rc <= (rc == 2'd2) ? 2'd0 : rc + 2'd1;
     end
 
-    // random numbers: 16 bit Fibonacci LFSR, x^16 + x^14 + x^13 + x^11 + 1, runs every clock
-    reg [15:0] lfsr;
+    // random numbers: 13 bit Fibonacci LFSR, x^13 + x^4 + x^3 + x + 1 (period 8191), runs every clock
+    reg [12:0] lfsr;
     always @(posedge clk) begin
-        if (!rst_n) lfsr <= 16'hACE1;
-        else        lfsr <= {lfsr[14:0], lfsr[15] ^ lfsr[13] ^ lfsr[12] ^ lfsr[10]};
+        if (!rst_n) lfsr <= 13'h0ACE;
+        else        lfsr <= {lfsr[11:0], lfsr[12] ^ lfsr[3] ^ lfsr[2] ^ lfsr[0]};
     end
 
     // ------------------------------------------------------------------
@@ -104,7 +104,8 @@ module game_core #(
     reg        buy_d;
     // idle timer: counts pictures down while a fog upgrade is active. Every catch and every purchase refills it;
     // when it reaches zero the fog window shrinks by one level and the timer is refilled.
-    localparam [6:0] TT = TLEN / MOVE;                      // the timer in game ticks (75 for 600 / 8)
+    localparam integer TTI = TLEN / MOVE;                   // the timer in game ticks (75 for 600 / 8)
+    localparam [6:0] TT = (TTI > 127) ? 7'd127 : TTI[6:0];  // 7 bits: longer timers are cut to 127 ticks
     reg [6:0]  trem;
     wire       expire = tick && (level != 2'd0) && (trem == 7'd0);
     wire       buy_ok = buy_c && !buy_d && (catches >= COST) && (level != 2'd2);   // a press with enough coins
@@ -113,7 +114,9 @@ module game_core #(
     wire       cup_ok  = (level == 2'd2) && (catches >= CUP) && !won;              // the trophy can be bought
     wire       cup_buy = buy_c && !buy_d && cup_ok;
     // what leaves the purse this clock: only one of the three can apply (buy_ok needs level < 2, cup_buy needs level 2)
-    wire [4:0] spend = buy_ok ? COST : cup_buy ? CUP : (expire ? {3'b0, lose} : 5'd0);
+    localparam [4:0] COST5 = COST[4:0];                 // the prices as 5 bit constants (no width warnings)
+    localparam [4:0] CUP5  = CUP[4:0];
+    wire [4:0] spend = buy_ok ? COST5 : cup_buy ? CUP5 : (expire ? {3'b0, lose} : 5'd0);
     reg [4:0]  bx, by;        // the cell of the latest catch (it stays dark blue); column 31 = none yet
 
     // where the walker respawns: on the other half of the field (columns 14..19 or 0..5), random row
@@ -124,24 +127,28 @@ module game_core #(
     wire [4:0] ny  = (r5 < 5'd20) ? r5 : r5 - 5'd12;                     // 0..19
 
     // ---- tile blockers: a cell is blocked when hash(column, row, epoch) is below a level dependent threshold.
-    // The epoch counts regenerations; a threshold of n * 1024 / 400 on the 10 bit hash gives about n of the 400 cells.
+    // The epoch counts regenerations (mod 64).
     reg [9:0] bcnt;                                // game ticks: low 4 bits = since the last regeneration, upper 6 = epoch
     wire [5:0] epoch = bcnt[9:4];                  // blockers move to new places every 16 game ticks
-    localparam integer BI0 = (BN0 * 1024 + 200) / 400;
-    localparam [9:0] BT0 = BI0[9:0];     // e.g. 10 -> 26, 35 -> 90, 50 -> 128
-    localparam integer BI1 = (BN1 * 1024 + 200) / 400;
-    localparam [9:0] BT1 = BI1[9:0];
-    localparam integer BI2 = (BN2 * 1024 + 200) / 400;
-    localparam [9:0] BT2 = BI2[9:0];
-    wire [9:0] bthr = (level == 2'd0) ? BT0 : (level == 2'd1) ? BT1 : BT2;
-    function [9:0] bhash(input [4:0] ax, input [4:0] ay, input [5:0] e);
-        reg [15:0] t;
+    // thresholds on the 8 bit hash: n * 256 / 400 gives about n of the 400 cells (10 -> 6, 35 -> 22, 50 -> 32)
+    localparam integer BI0 = (BN0 * 256 + 200) / 400;
+    localparam integer BI1 = (BN1 * 256 + 200) / 400;
+    localparam integer BI2 = (BN2 * 256 + 200) / 400;
+    localparam [7:0] BT0 = BI0[7:0];
+    localparam [7:0] BT1 = BI1[7:0];
+    localparam [7:0] BT2 = BI2[7:0];
+    wire [7:0] bthr = (level == 2'd0) ? BT0 : (level == 2'd1) ? BT1 : BT2;
+    // The hash: spread (column, row, epoch) over 10 bits with shifts and XORs (cheap: no adders), then two AND rounds,
+    // t ^= (t << a) & (t >> b), which make it non-linear. The shifts were picked by a search so that the blocked cells
+    // look random: they do not clump, and a regeneration changes most of them (checked with a Python model).
+    function [7:0] bhash(input [4:0] ax, input [4:0] ay, input [5:0] e);
+        reg [9:0] t;
         begin
-            t = {ax, 11'd0} ^ {5'd0, ay, 6'd0} ^ {7'd0, e, 3'd0} ^ {13'd0, e[5:3]} ^ {9'd0, ax, 2'd0} ^ {11'd0, ay};
-            t = t ^ {t[8:0], 7'd0} ^ {9'd0, t[15:9]};
-            t = t ^ ({t[10:0], 5'd0} & {3'd0, t[15:3]});      // AND rounds instead of an adder: cheaper, and still non-linear
-            t = t ^ ({t[12:0], 3'd0} & {5'd0, t[15:5]});
-            bhash = t[15:6];
+            t = ({5'd0, ax} << 7) ^ ({5'd0, ay} << 2) ^ ({4'd0, e} << 4) ^ ({4'd0, e} << 5) ^ ({5'd0, ax} << 8) ^ ({5'd0, ay} << 7);
+            t = t ^ (t << 4) ^ (t >> 3);
+            t = t ^ ((t << 4) & (t >> 4));
+            t = t ^ ((t << 5) & (t >> 1));
+            bhash = t[9:2];
         end
     endfunction
 
@@ -217,7 +224,7 @@ module game_core #(
                 default: ;
             endcase
             buy_d <= buy_c;
-            // coins: +1 for a catch (up to 31), -COST for an upgrade, -CUP for the trophy, -2 when the timer runs out
+            // coins: +1 for a catch (up to 31), -COST for an upgrade, -CUP for the trophy, -3 when the timer runs out
             // (in practice they never fall in the same clock, but the sum is safe if they do)
             catches <= catches + {4'b0, gotcha && (catches != 5'd31)} - spend;
             if (cup_buy) won <= 1'b1;
