@@ -13,10 +13,10 @@
 //     trophy is drawn in the middle of the screen. The second cyan square turns gold when the cup is affordable.
 //   * Tile blockers: red cells nobody can enter (you stay where you are, the yellow square walks around them). There
 //     are about BN0, BN1, BN2 of them at fog level 0, 1, 2 (3 x 3, 5 x 5, 7 x 7; currently 10, 35, 50) and they
-//     jump to new places every BPERIOD (15) game ticks. Which cells are blocked comes from a hash of (column, row,
+//     jump to new places every 16 game ticks. Which cells are blocked comes from a hash of (column, row,
 //     epoch), so no positions are stored; the numbers are averages (usually within about +-30 %: 10 -> 5..15,
 //     35 -> 27..44). Only blockers inside your clear window are visible.
-//   * Idle timer: with an upgrade, a bar at the top of the screen runs down in TLEN pictures (60 per second). A catch (or buying an upgrade)
+//   * Idle timer: with an upgrade, a bar at the top of the screen runs down in TLEN pictures (60 per second, counted in game ticks). A catch (or buying an upgrade)
 //     refills it. If it runs out the fog window shrinks by one level, you lose 3 coins (not below 0) and the bar starts again.
 //   * Both squares are 0.8 of a cell (26 x 20 px) so they stay inside their cell.
 //   * When both squares end up in the same cell you have caught it: the catch counter goes up (one golden line
@@ -34,11 +34,10 @@ module game_core #(
     parameter CUP  = 10,         // catches (coins) for the trophy at the last level
     parameter COINS0 = 0,       // coins at reset: 0 for the real game, more for testing (max 31)
     parameter BLOCKS = 1,        // 1 = tile blockers on, 0 = off
-    parameter BPERIOD = 15,      // game ticks between two regenerations of the blockers (max 16)
     parameter BN0 = 10,          // about this many blockers at fog level 0 (3 x 3)
     parameter BN1 = 35,          //                                 level 1 (5 x 5)
     parameter BN2 = 50,          //                                 level 2 (7 x 7)
-    parameter TLEN = 600         // idle timer in pictures, 60 per second (600 = 10 s, max 4095 = 68 s). The bar scales itself.
+    parameter TLEN = 600         // idle timer in pictures, 60 per second (600 = 10 s). It counts game ticks: TLEN / MOVE of them (max 127).
 ) (
     input  wire        clk,
     input  wire        rst_n,
@@ -105,13 +104,16 @@ module game_core #(
     reg        buy_d;
     // idle timer: counts pictures down while a fog upgrade is active. Every catch and every purchase refills it;
     // when it reaches zero the fog window shrinks by one level and the timer is refilled.
-    reg [11:0] trem;
-    wire       expire = frame && !won && (level != 2'd0) && (trem == 12'd0);
+    localparam [6:0] TT = TLEN / MOVE;                      // the timer in game ticks (75 for 600 / 8)
+    reg [6:0]  trem;
+    wire       expire = tick && (level != 2'd0) && (trem == 7'd0);
     wire       buy_ok = buy_c && !buy_d && (catches >= COST) && (level != 2'd2);   // a press with enough coins
     // running out of time costs 3 coins, but never more than you have (a purchase in the same clock keeps priority)
     wire [1:0] lose = (catches >= 5'd3) ? 2'd3 : catches[1:0];
     wire       cup_ok  = (level == 2'd2) && (catches >= CUP) && !won;              // the trophy can be bought
     wire       cup_buy = buy_c && !buy_d && cup_ok;
+    // what leaves the purse this clock: only one of the three can apply (buy_ok needs level < 2, cup_buy needs level 2)
+    wire [4:0] spend = buy_ok ? COST : cup_buy ? CUP : (expire ? {3'b0, lose} : 5'd0);
     reg [4:0]  bx, by;        // the cell of the latest catch (it stays dark blue); column 31 = none yet
 
     // where the walker respawns: on the other half of the field (columns 14..19 or 0..5), random row
@@ -123,16 +125,19 @@ module game_core #(
 
     // ---- tile blockers: a cell is blocked when hash(column, row, epoch) is below a level dependent threshold.
     // The epoch counts regenerations; a threshold of n * 1024 / 400 on the 10 bit hash gives about n of the 400 cells.
-    reg [3:0] bcnt;                                // game ticks since the last regeneration
-    reg [7:0] epoch;
-    localparam [9:0] BT0 = (BN0 * 1024 + 200) / 400;     // e.g. 10 -> 26, 35 -> 90, 50 -> 128
-    localparam [9:0] BT1 = (BN1 * 1024 + 200) / 400;
-    localparam [9:0] BT2 = (BN2 * 1024 + 200) / 400;
+    reg [9:0] bcnt;                                // game ticks: low 4 bits = since the last regeneration, upper 6 = epoch
+    wire [5:0] epoch = bcnt[9:4];                  // blockers move to new places every 16 game ticks
+    localparam integer BI0 = (BN0 * 1024 + 200) / 400;
+    localparam [9:0] BT0 = BI0[9:0];     // e.g. 10 -> 26, 35 -> 90, 50 -> 128
+    localparam integer BI1 = (BN1 * 1024 + 200) / 400;
+    localparam [9:0] BT1 = BI1[9:0];
+    localparam integer BI2 = (BN2 * 1024 + 200) / 400;
+    localparam [9:0] BT2 = BI2[9:0];
     wire [9:0] bthr = (level == 2'd0) ? BT0 : (level == 2'd1) ? BT1 : BT2;
-    function [9:0] bhash(input [4:0] ax, input [4:0] ay, input [7:0] e);
+    function [9:0] bhash(input [4:0] ax, input [4:0] ay, input [5:0] e);
         reg [15:0] t;
         begin
-            t = {ax, 11'd0} ^ {5'd0, ay, 6'd0} ^ {5'd0, e, 3'd0} ^ {13'd0, e[7:5]} ^ {9'd0, ax, 2'd0} ^ {11'd0, ay};
+            t = {ax, 11'd0} ^ {5'd0, ay, 6'd0} ^ {7'd0, e, 3'd0} ^ {13'd0, e[5:3]} ^ {9'd0, ax, 2'd0} ^ {11'd0, ay};
             t = t ^ {t[8:0], 7'd0} ^ {9'd0, t[15:9]};
             t = t ^ ({t[10:0], 5'd0} & {3'd0, t[15:3]});      // AND rounds instead of an adder: cheaper, and still non-linear
             t = t ^ ({t[12:0], 3'd0} & {5'd0, t[15:5]});
@@ -140,6 +145,7 @@ module game_core #(
         end
     endfunction
 
+    wire eol = x[9] && !x[7] && (&x[6:0]);        // x == 639: x never goes past 799, so these 9 bits are enough
     reg [4:0] cy;             // cell row 0..19
     reg [4:0] yin;            // line inside the cell row 0..23
     wire [4:0] cx  = x[9:5];
@@ -192,11 +198,10 @@ module game_core #(
             catches <= COINS0;
             level   <= 2'd0;
             buy_d   <= 1'b0;
-            trem    <= TLEN;
+            trem    <= TT;
             won     <= 1'b0;
             bx <= 5'd31; by <= 5'd31;
-            bcnt <= 4'd0;
-            epoch <= 8'd0;
+            bcnt <= 10'd0;
             seq <= 3'd0;
             hbk <= 1'b0; bh <= 1'b0; bv <= 1'b0; rbk <= 1'b0;
             rl <= 4'd0;
@@ -214,25 +219,18 @@ module game_core #(
             buy_d <= buy_c;
             // coins: +1 for a catch (up to 31), -COST for an upgrade, -CUP for the trophy, -2 when the timer runs out
             // (in practice they never fall in the same clock, but the sum is safe if they do)
-            catches <= catches + {4'b0, gotcha && (catches != 5'd31)} - (buy_ok ? COST : 5'd0) - (cup_buy ? CUP : 5'd0)
-                               - ((expire && !buy_ok && !cup_buy) ? {3'b0, lose} : 5'd0);
+            catches <= catches + {4'b0, gotcha && (catches != 5'd31)} - spend;
             if (cup_buy) won <= 1'b1;
             if (buy_ok)      level <= level + 2'd1;           // upgrade (wins if both happen at once)
             else if (expire) level <= level - 2'd1;           // timer ran out without a catch: the fog closes in
-            if (gotcha || buy_ok || expire) trem <= TLEN;     // refill
-            else if (frame && !won && level != 2'd0) trem <= trem - 12'd1;
+            if (gotcha || buy_ok || expire) trem <= TT;     // refill
+            else if (tick && level != 2'd0) trem <= trem - 7'd1;
             if (gotcha) begin                    // caught: mark the cell, respawn the walker
                 bx <= px; by <= py;
                 rx <= nx; ry <= ny;
             end
             if (commit) begin
-                // blockers move to new places every BPERIOD game ticks
-                if (bcnt == BPERIOD - 1) begin
-                    bcnt  <= 4'd0;
-                    epoch <= epoch + 8'd1;
-                end else begin
-                    bcnt <= bcnt + 4'd1;
-                end
+                bcnt <= bcnt + 10'd1;                             // the epoch advances every 16 game ticks
                 // the human: one step (two buttons at once give a diagonal step), unless that cell is blocked
                 if (!hbk) begin
                     px <= htx;
@@ -245,8 +243,8 @@ module game_core #(
                         rx <= rtx;
                         ry <= rty;
                     end
-                end else if (do_h) rx <= away_r ? rx + 5'd1 : rx - 5'd1;
-                else if (do_v)     ry <= away_d ? ry + 5'd1 : ry - 5'd1;
+                end else if (do_h) rx <= hcx;
+                else if (do_v)     ry <= vcy;
             end
         end
     end
@@ -255,10 +253,10 @@ module game_core #(
     // 4. which cell is the beam in? column from x, row from two counters (24 lines per row)
     // ------------------------------------------------------------------
     always @(posedge clk) begin
-        if (!rst_n || (x == 10'd639 && y == 10'd524)) begin   // end of the last blanking line: the next line is line 0
+        if (!rst_n || (eol && y[9] && y[3] && y[2])) begin   // end of the last blanking line: the next line is line 0
             cy  <= 5'd0;
             yin <= 5'd0;
-        end else if (x == 10'd639) begin           // end of the visible part of a line: step to the next line
+        end else if (eol) begin           // end of the visible part of a line: step to the next line
             if (yin == 5'd23) begin
                 yin <= 5'd0;
                 cy  <= cy + 5'd1;
@@ -279,28 +277,21 @@ module game_core #(
     wire blue = (bx == cx) && (by == cy);             // the cell of the latest catch
     wire blk_here = qb && !rng_here;   // a blocker (never drawn under a square)
 
-    // idle timer bar: top of the screen, y = 0..5, x = 20..; only with an upgrade. The scale follows TLEN: shifted
-    // right (TR) or left (TL) so that the full bar is the longest one that fits, at most 600 px (TLEN 600 -> 1 px per
-    // picture, 1200 -> 1 px per 2, 300 -> 2 px per picture). The empty track is TPX pixels long, the bar is what is
-    // left; it turns red in the last quarter.
-    localparam integer TR = (TLEN > 2400) ? 3 : (TLEN > 1200) ? 2 : (TLEN > 600) ? 1 : 0;
-    localparam integer TL = (TLEN > 300) ? 0 : (TLEN > 150) ? 1 : (TLEN > 75) ? 2 : 3;
-    localparam [11:0] TPX  = (TLEN >> TR) << TL;
-    localparam [11:0] TLOW = TLEN >> 2;
-    wire [9:0] xb      = x - 10'd20;
-    wire [11:0] tleft  = (trem >> TR) << TL;
-    wire       tbar_on = (level != 2'd0) && (y < 10'd6) && (x >= 10'd20) && ({2'b00, xb} < TPX);
-    wire       tbar    = tbar_on && ({2'b00, xb} < tleft);                // the part that is left
+    // idle timer bar: top of the screen, y = 0..5, from x = 0; only with an upgrade. One game tick = MOVE = 8 pixels
+    // of bar, so (x >> 3) < trem needs no subtractor. The empty track is TPX pixels long; the bar turns red in the last quarter.
+    localparam [9:0] TPX  = TT * 8;
+    localparam [6:0] TLOW = TT >> 2;
+    wire       tbar_on = (level != 2'd0) && (y < 10'd6) && (x < TPX);
+    wire       tbar    = tbar_on && (x[9:3] < trem);                       // the part that is left
     wire       tlow    = trem < TLOW;                                      // last quarter: red
 
     // catch counter: one golden line (4 px wide, 24 px tall) per catch, 8 px apart, top left corner, drawn over the fog
-    wire [9:0] xm    = x - 10'd8;
     // fog upgrades bought: one cyan square (8 x 8 px) per level under the tally, y = 40..47
     wire       lvl_row = (y[9:4] == 6'd2) && (y[3] == 1'b1);
     wire       lvl1_sq = lvl_row && (x[9:4] == 6'd0) && (x[3] == 1'b1) && (level != 2'd0);
     wire       lvl2_sq = lvl_row && (x[9:4] == 6'd1) && (x[3] == 1'b1) && (level == 2'd2);
     wire       lvl_sq  = lvl1_sq || lvl2_sq;
-    wire       tally = (x[9:3] != 7'd0) && (y[9:5] == 5'd0) && (y[4:3] != 2'd0) && !xm[2] && (xm[9:3] < {2'b00, catches});
+    wire       tally = (x[9:3] != 7'd0) && (y[9:5] == 5'd0) && (y[4:3] != 2'd0) && !x[2] && (x[9:3] <= {2'b00, catches});
 
     // trophy: a 16 x 16 bitmap of which only the left half is stored (the right half is its mirror image);
     // every bit is 16 x 16 screen pixels, so the cup is 256 x 256 px in the middle of the screen (x 192.., y 112..)
