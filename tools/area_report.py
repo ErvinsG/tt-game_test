@@ -3,9 +3,9 @@
 Needs Yosys (e.g.  pip install yowasp-yosys  ->  yowasp-yosys on PATH). Run from the repo root:
     python tools/area_report.py          # src/ and ./info.yaml
     python tools/area_report.py src1     # src1/ and src1/info.yaml
-Numbers are generic gate counts (not um^2). Calibration from the real flow: the 7,941 cell design came out at
-450 % of a 1x1 tile (12,476 cells: 649 %), i.e. about 9.4 um^2 per generic cell, and a tile core is ~16,500 um^2 x
-the number of tiles. Aim for utilisation below ~80 % (set PL_TARGET_DENSITY_PCT to 80 in src/config.json).
+Numbers are generic gate counts (not um^2). Calibration from the real flow: 7,941 cells -> 450 % of a 1x1 tile, 2,815 cells -> 79.6 % of a 1x2,
+1,350 cells -> ~83 % of a 1x1, i.e. about 9.4 .. 10.1 um^2 per generic cell (the small designs are less
+efficient), and a tile core is ~16,500 um^2 x the number of tiles. 10.1 is used so that the estimate is not low. Aim for utilisation below ~80 % (set PL_TARGET_DENSITY_PCT to 80 in src/config.json).
 """
 import pathlib
 import re
@@ -15,7 +15,7 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-TILE_UM2, UM2_PER_CELL = 16500, 9.4
+TILE_UM2, UM2_PER_CELL = 16500, 10.1
 BS = chr(92)  # backslash, Yosys writes parametrised module names like  $paramod\ip_tick\DIV=...
 
 # optional argument: a project folder such as src1 (sources and info.yaml inside it); default = src/ + ./info.yaml
