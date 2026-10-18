@@ -6,7 +6,7 @@ project:
   description:  "20x20 grid in fog: chase a runaway square around red blockers, spend coins to widen your view (3x3, 5x5, 7x7), then buy the trophy to win"
   language:     "Verilog"
   clock_hz:     25175000
-  tiles: "1x2"
+  tiles: "1x1"
   top_module:  "tt_um_ervinsg_game_test"
   source_files:
     - "game_core.v"

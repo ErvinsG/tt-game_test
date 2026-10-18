@@ -152,9 +152,11 @@ module game_core #(
         end
     endfunction
 
-    wire eol = x[9] && !x[7] && (&x[6:0]);        // x == 639: x never goes past 799, so these 9 bits are enough
-    reg [4:0] cy;             // cell row 0..19
-    reg [4:0] yin;            // line inside the cell row 0..23
+    // the cell row and the line inside it: 24 = 8 x 3, so y / 24 = (y / 8) / 3 and y % 24 = ((y / 8) % 3) * 8 + y % 8
+    wire [5:0] y8 = y[8:3];                        // 0..59 while the picture is drawn
+    wire [4:0] cy  = y8 / 6'd3;
+    wire [1:0] y3  = y8 % 6'd3;
+    wire [4:0] yin = {y3, y[2:0]};
     wire [4:0] cx  = x[9:5];
     wire [4:0] xin = x[4:0];
 
@@ -257,22 +259,8 @@ module game_core #(
     end
 
     // ------------------------------------------------------------------
-    // 4. which cell is the beam in? column from x, row from two counters (24 lines per row)
+    // 4. which cell is the beam in? column from x, row from y (no counters: y / 24 is a small divide by 3)
     // ------------------------------------------------------------------
-    always @(posedge clk) begin
-        if (!rst_n || (eol && y[9] && y[3] && y[2])) begin   // end of the last blanking line: the next line is line 0
-            cy  <= 5'd0;
-            yin <= 5'd0;
-        end else if (eol) begin           // end of the visible part of a line: step to the next line
-            if (yin == 5'd23) begin
-                yin <= 5'd0;
-                cy  <= cy + 5'd1;
-            end else begin
-                yin <= yin + 5'd1;
-            end
-        end
-    end
-
     // ------------------------------------------------------------------
     // 5. colour
     // ------------------------------------------------------------------
