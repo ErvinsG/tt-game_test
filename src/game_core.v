@@ -134,8 +134,8 @@ module game_core #(
         begin
             t = {ax, 11'd0} ^ {5'd0, ay, 6'd0} ^ {5'd0, e, 3'd0} ^ {13'd0, e[7:5]} ^ {9'd0, ax, 2'd0} ^ {11'd0, ay};
             t = t ^ {t[8:0], 7'd0} ^ {9'd0, t[15:9]};
-            t = t ^ {t[10:0], 5'd0} ^ {3'd0, t[15:3]};
-            t = t + {t[10:0], t[15:11]};
+            t = t ^ ({t[10:0], 5'd0} & {3'd0, t[15:3]});      // AND rounds instead of an adder: cheaper, and still non-linear
+            t = t ^ ({t[12:0], 3'd0} & {5'd0, t[15:5]});
             bhash = t[15:6];
         end
     endfunction
