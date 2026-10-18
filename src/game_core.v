@@ -17,7 +17,7 @@
 //     epoch), so no positions are stored; the numbers are averages (usually within about +-30 %: 10 -> 5..15,
 //     35 -> 27..44). Only blockers inside your clear window are visible.
 //   * Idle timer: with an upgrade, a bar at the top of the screen runs down in TLEN pictures (60 per second). A catch (or buying an upgrade)
-//     refills it. If it runs out the fog window shrinks by one level, you lose 2 coins (not below 0) and the bar starts again.
+//     refills it. If it runs out the fog window shrinks by one level, you lose 3 coins (not below 0) and the bar starts again.
 //   * Both squares are 0.8 of a cell (26 x 20 px) so they stay inside their cell.
 //   * When both squares end up in the same cell you have caught it: the catch counter goes up (one golden line
 //     per catch in the top left corner, up to 31), that cell turns dark blue (the latest catch stays marked) and
@@ -69,16 +69,18 @@ module game_core #(
     reg       won;                // the trophy has been bought: the game is over, everything stands still
     reg [3:0] mvc;
     reg [1:0] rc;
-    wire tick  = frame && (mvc == MOVE - 1) && !won;
-    wire rtick = tick && (rc == 2'd2);
+    reg [2:0] seq;                // after a tick: 1..4 = blocker lookups one by one, 5 = commit the moves
+    wire tick   = frame && (mvc == MOVE - 1) && !won;
+    wire commit = (seq == 3'd5);
+    wire rtick  = commit && (rc == 2'd2);
     always @(posedge clk) begin
         if (!rst_n) begin
             mvc <= 4'd0;
             rc  <= 2'd0;
         end else if (frame) begin
             mvc <= tick ? 4'd0 : mvc + 4'd1;
-            if (tick) rc <= (rc == 2'd2) ? 2'd0 : rc + 2'd1;
         end
+        if (commit) rc <= (rc == 2'd2) ? 2'd0 : rc + 2'd1;
     end
 
     // random numbers: 16 bit Fibonacci LFSR, x^16 + x^14 + x^13 + x^11 + 1, runs every clock
@@ -106,8 +108,8 @@ module game_core #(
     reg [11:0] trem;
     wire       expire = frame && !won && (level != 2'd0) && (trem == 12'd0);
     wire       buy_ok = buy_c && !buy_d && (catches >= COST) && (level != 2'd2);   // a press with enough coins
-    // running out of time costs 2 coins, but never more than you have (a purchase in the same clock keeps priority)
-    wire [1:0] lose = (catches >= 5'd2) ? 2'd3 : catches[1:0];
+    // running out of time costs 3 coins, but never more than you have (a purchase in the same clock keeps priority)
+    wire [1:0] lose = (catches >= 5'd3) ? 2'd3 : catches[1:0];
     wire       cup_ok  = (level == 2'd2) && (catches >= CUP) && !won;              // the trophy can be bought
     wire       cup_buy = buy_c && !buy_d && cup_ok;
     reg [4:0]  bx, by;        // the cell of the latest catch (it stays dark blue); column 31 = none yet
@@ -137,17 +139,26 @@ module game_core #(
             bhash = t[15:6];
         end
     endfunction
-    function blk(input [4:0] ax, input [4:0] ay, input [7:0] e, input [9:0] thr);
-        blk = (BLOCKS != 0) && (bhash(ax, ay, e) < thr);
-    endfunction
+
+    reg [4:0] cy;             // cell row 0..19
+    reg [4:0] yin;            // line inside the cell row 0..23
+    wire [4:0] cx  = x[9:5];
+    wire [4:0] xin = x[4:0];
+
+    // ONE hash unit serves every lookup. During the picture it answers for the beam's cell (seq = 0). After each game
+    // tick (which starts in the blanking, so the picture does not need it) it answers four questions in a row, one per
+    // clock, and the answers are kept: seq 1 = the human's target cell, 2 / 3 = the walker's horizontal / vertical
+    // escape cell, 4 = the walker's random step. The moves are decided at seq 5. A square may always enter the cell of
+    // the other one (that is a catch), so that cell is never reported as blocked.
+    reg       hbk, bh, bv, rbk;                    // answers: human target, walker horizontal, vertical, random step
+    reg [3:0] rl;                                   // the random numbers for this move, taken at the tick
 
     // where does the human go? one step in the pressed direction(s), unless that cell is blocked
     // (walking onto the yellow square is fine: that is a catch)
     wire       hl_ = left_c && !right_c, hr_ = right_c && !left_c, hu_ = up_c && !down_c, hd_ = down_c && !up_c;
     wire [4:0] htx = hl_ ? ((px > 5'd0) ? px - 5'd1 : px) : hr_ ? ((px < 5'd19) ? px + 5'd1 : px) : px;
     wire [4:0] hty = hu_ ? ((py > 5'd0) ? py - 5'd1 : py) : hd_ ? ((py < 5'd19) ? py + 5'd1 : py) : py;
-    wire       hblk = blk(htx, hty, epoch, bthr) && !((htx == rx) && (hty == ry));
-
+    
     // where does the walker want to go? Away from the human, along the axis with the larger distance.
     wire [5:0] ddx = {1'b0, rx} - {1'b0, px};          // signed differences, walker minus human
     wire [5:0] ddy = {1'b0, ry} - {1'b0, py};
@@ -158,17 +169,20 @@ module game_core #(
     wire away_d = !ddy[5];
     wire [4:0] hcx = away_r ? rx + 5'd1 : rx - 5'd1;   // the cells one step away horizontally / vertically
     wire [4:0] vcy = away_d ? ry + 5'd1 : ry - 5'd1;
-    wire blk_h  = blk(hcx, ry, epoch, bthr) && !((hcx == px) && (ry == py));
-    wire blk_v  = blk(rx, vcy, epoch, bthr) && !((rx == px) && (vcy == py));
-    wire can_h  = (away_r ? (rx < 5'd19) : (rx > 5'd0)) && !blk_h;   // neither a wall nor a blocker is in the way
-    wire can_v  = (away_d ? (ry < 5'd19) : (ry > 5'd0)) && !blk_v;
+    wire can_h  = (away_r ? (rx < 5'd19) : (rx > 5'd0)) && !bh;   // neither a wall nor a blocker is in the way
+    wire can_v  = (away_d ? (ry < 5'd19) : (ry > 5'd0)) && !bv;
     wire use_h  = (horiz && can_h) || (!horiz && !can_v);   // when the best axis is blocked slide along the other one
     wire do_h   = use_h && can_h;
     wire do_v   = !use_h && can_v;
-    wire rnd    = (lfsr[3:2] == 2'b00);                // one move in four is random
-    wire [4:0] rtx = (lfsr[1:0] == 2'd0) ? ((rx > 5'd0) ? rx - 5'd1 : rx) : (lfsr[1:0] == 2'd1) ? ((rx < 5'd19) ? rx + 5'd1 : rx) : rx;
-    wire [4:0] rty = (lfsr[1:0] == 2'd2) ? ((ry > 5'd0) ? ry - 5'd1 : ry) : (lfsr[1:0] == 2'd3) ? ((ry < 5'd19) ? ry + 5'd1 : ry) : ry;
-    wire       rblk = blk(rtx, rty, epoch, bthr) && !((rtx == px) && (rty == py));
+    wire rnd    = (rl[3:2] == 2'b00);                  // one move in four is random
+    wire [4:0] rtx = (rl[1:0] == 2'd0) ? ((rx > 5'd0) ? rx - 5'd1 : rx) : (rl[1:0] == 2'd1) ? ((rx < 5'd19) ? rx + 5'd1 : rx) : rx;
+    wire [4:0] rty = (rl[1:0] == 2'd2) ? ((ry > 5'd0) ? ry - 5'd1 : ry) : (rl[1:0] == 2'd3) ? ((ry < 5'd19) ? ry + 5'd1 : ry) : ry;
+
+    wire [4:0] qx = (seq == 3'd1) ? htx : (seq == 3'd2) ? hcx : (seq == 3'd3) ? rx  : (seq == 3'd4) ? rtx : cx;
+    wire [4:0] qy = (seq == 3'd1) ? hty : (seq == 3'd2) ? ry  : (seq == 3'd3) ? vcy : (seq == 3'd4) ? rty : cy;
+    wire [4:0] ex = (seq == 3'd1) ? rx : px;        // the cell that is never blocked
+    wire [4:0] ey = (seq == 3'd1) ? ry : py;
+    wire       qb = (BLOCKS != 0) && (bhash(qx, qy, epoch) < bthr) && !((qx == ex) && (qy == ey));
 
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -183,8 +197,20 @@ module game_core #(
             bx <= 5'd31; by <= 5'd31;
             bcnt <= 4'd0;
             epoch <= 8'd0;
+            seq <= 3'd0;
+            hbk <= 1'b0; bh <= 1'b0; bv <= 1'b0; rbk <= 1'b0;
+            rl <= 4'd0;
         end else begin
-            chk   <= tick;                       // the positions are updated now, look at them next clock
+            chk   <= commit;                     // the positions are updated now, look at them next clock
+            if (tick) begin seq <= 3'd1; rl <= lfsr[3:0]; end
+            else if (seq != 3'd0) seq <= commit ? 3'd0 : seq + 3'd1;
+            case (seq)
+                3'd1: hbk <= qb;
+                3'd2: bh  <= qb;
+                3'd3: bv  <= qb;
+                3'd4: rbk <= qb;
+                default: ;
+            endcase
             buy_d <= buy_c;
             // coins: +1 for a catch (up to 31), -COST for an upgrade, -CUP for the trophy, -2 when the timer runs out
             // (in practice they never fall in the same clock, but the sum is safe if they do)
@@ -199,7 +225,7 @@ module game_core #(
                 bx <= px; by <= py;
                 rx <= nx; ry <= ny;
             end
-            if (tick) begin
+            if (commit) begin
                 // blockers move to new places every BPERIOD game ticks
                 if (bcnt == BPERIOD - 1) begin
                     bcnt  <= 4'd0;
@@ -208,14 +234,14 @@ module game_core #(
                     bcnt <= bcnt + 4'd1;
                 end
                 // the human: one step (two buttons at once give a diagonal step), unless that cell is blocked
-                if (!hblk) begin
+                if (!hbk) begin
                     px <= htx;
                     py <= hty;
                 end
             end
             if (rtick) begin
                 if (rnd) begin
-                    if (!rblk) begin                                   // a random step, not into a blocker
+                    if (!rbk) begin                                   // a random step, not into a blocker
                         rx <= rtx;
                         ry <= rty;
                     end
@@ -228,8 +254,6 @@ module game_core #(
     // ------------------------------------------------------------------
     // 4. which cell is the beam in? column from x, row from two counters (24 lines per row)
     // ------------------------------------------------------------------
-    reg [4:0] cy;             // cell row 0..19
-    reg [4:0] yin;            // line inside the cell row 0..23
     always @(posedge clk) begin
         if (!rst_n || (x == 10'd639 && y == 10'd524)) begin   // end of the last blanking line: the next line is line 0
             cy  <= 5'd0;
@@ -243,8 +267,6 @@ module game_core #(
             end
         end
     end
-    wire [4:0] cx  = x[9:5];
-    wire [4:0] xin = x[4:0];
 
     // ------------------------------------------------------------------
     // 5. colour
@@ -255,7 +277,7 @@ module game_core #(
     wire rng_here = (rx == cx) && (ry == cy);
 
     wire blue = (bx == cx) && (by == cy);             // the cell of the latest catch
-    wire blk_here = blk(cx, cy, epoch, bthr) && !hum_here && !rng_here;   // a blocker (never drawn under a square)
+    wire blk_here = qb && !rng_here;   // a blocker (never drawn under a square)
 
     // idle timer bar: top of the screen, y = 0..5, x = 20..; only with an upgrade. The scale follows TLEN: shifted
     // right (TR) or left (TL) so that the full bar is the longest one that fits, at most 600 px (TLEN 600 -> 1 px per
