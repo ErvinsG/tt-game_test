@@ -4,13 +4,13 @@
 //     Two buttons at once move diagonally. A game tick is MOVE pictures (default 8 -> 7.5 moves per second).
 //   * The yellow square runs away. It moves on every 3rd game tick, one cell: along the axis where you are farther
 //     away, sliding along a wall when that way is blocked. In one move out of four it steps in a random direction
-//     instead (a 16 bit LFSR picks it), so it is not completely predictable.
+//     instead (a 13 bit LFSR picks it), so it is not completely predictable.
 //   * Fog of war: only a small window of cells around you is visible: you stand in its middle cell, it follows you
 //     and stays on the map. The rest of the field is grey fog, so the yellow square can hide in it. The window starts
-//     at 3 x 3. The buy button (and 4 catches, which it spends) makes it 5 x 5, and again 7 x 7. A cyan square under
-//     the tally in the top left shows each upgrade you have.
+//     at 3 x 3. The buy button (and 4 catches, which it spends) makes it 5 x 5, and again 7 x 7. (With LVLSQ = 1 a cyan
+//     square under the tally in the top left shows each upgrade you have.)
 //   * Last level: at 7 x 7 the buy button costs CUP (8) catches and wins the game: everything stops and a golden
-//     trophy is drawn in the middle of the screen. The second cyan square turns gold when the cup is affordable.
+//     trophy is drawn in the middle of the screen. (With LVLSQ = 1 the second cyan square turns gold when the cup is affordable.)
 //   * Tile blockers: red cells nobody can enter (you stay where you are, the yellow square walks around them). There
 //     are about BN0, BN1, BN2 of them at fog level 0, 1, 2 (3 x 3, 5 x 5, 7 x 7; currently 10, 35, 50) and they
 //     jump to new places every 16 game ticks. Which cells are blocked comes from a hash of (column, row,
@@ -20,7 +20,7 @@
 //     refills it. If it runs out the fog window shrinks by one level, you lose 3 coins (not below 0) and the bar starts again.
 //   * Both squares are 0.8 of a cell (26 x 20 px) so they stay inside their cell.
 //   * When both squares end up in the same cell you have caught it: the catch counter goes up (one golden line
-//     per catch in the top left corner, up to 31), that cell turns dark blue (the latest catch stays marked) and
+//     per catch in the top left corner, up to 31), (with MARK = 1) that cell turns dark blue (the latest catch stays marked) and
 //     the yellow square respawns on the other side of the field, at least 5 columns away, at a random row.
 //     The game goes on. Reset starts again from zero catches.
 //
@@ -37,6 +37,9 @@ module game_core #(
     parameter BN0 = 10,          // about this many blockers at fog level 0 (3 x 3)
     parameter BN1 = 35,          //                                 level 1 (5 x 5)
     parameter BN2 = 50,          //                                 level 2 (7 x 7)
+    parameter MARK   = 0,        // 1 = the cell of the latest catch stays dark blue (costs 10 flip-flops and ~6 % of a 1x1 tile)
+    parameter LVLSQ  = 0,        // 1 = cyan squares under the tally show the fog upgrades (~4 % of a 1x1 tile)
+    parameter CUPBMP = 0,        // 1 = the trophy has handles (a 16 x 8 bitmap), 0 = a plain cup (~1.5 % of a 1x1 tile)
     parameter TLEN = 600         // idle timer in pictures, 60 per second (600 = 10 s). It counts game ticks: TLEN / MOVE of them (max 127).
 ) (
     input  wire        clk,
@@ -66,7 +69,7 @@ module game_core #(
     // 2. game tick every MOVE pictures; the random square moves on every 3rd tick
     // ------------------------------------------------------------------
     reg       won;                // the trophy has been bought: the game is over, everything stands still
-    reg [3:0] mvc;
+    reg [2:0] mvc;                // counts pictures 0 .. MOVE-1 (MOVE <= 8)
     reg [1:0] rc;
     reg [2:0] seq;                // after a tick: 1..4 = blocker lookups one by one, 5 = commit the moves
     wire tick   = frame && (mvc == MOVE - 1) && !won;
@@ -74,10 +77,10 @@ module game_core #(
     wire rtick  = commit && (rc == 2'd2);
     always @(posedge clk) begin
         if (!rst_n) begin
-            mvc <= 4'd0;
+            mvc <= 3'd0;
             rc  <= 2'd0;
         end else if (frame) begin
-            mvc <= tick ? 4'd0 : mvc + 4'd1;
+            mvc <= tick ? 3'd0 : mvc + 3'd1;
         end
         if (commit) rc <= (rc == 2'd2) ? 2'd0 : rc + 2'd1;
     end
@@ -171,8 +174,8 @@ module game_core #(
     // where does the human go? one step in the pressed direction(s), unless that cell is blocked
     // (walking onto the yellow square is fine: that is a catch)
     wire       hl_ = left_c && !right_c, hr_ = right_c && !left_c, hu_ = up_c && !down_c, hd_ = down_c && !up_c;
-    wire [4:0] htx = hl_ ? ((px > 5'd0) ? px - 5'd1 : px) : hr_ ? ((px < 5'd19) ? px + 5'd1 : px) : px;
-    wire [4:0] hty = hu_ ? ((py > 5'd0) ? py - 5'd1 : py) : hd_ ? ((py < 5'd19) ? py + 5'd1 : py) : py;
+    wire [4:0] htx = hl_ ? ((px != 5'd0) ? px - 5'd1 : px) : hr_ ? ((px != 5'd19) ? px + 5'd1 : px) : px;
+    wire [4:0] hty = hu_ ? ((py != 5'd0) ? py - 5'd1 : py) : hd_ ? ((py != 5'd19) ? py + 5'd1 : py) : py;
     
     // where does the walker want to go? Away from the human, along the axis with the larger distance.
     wire [5:0] ddx = {1'b0, rx} - {1'b0, px};          // signed differences, walker minus human
@@ -184,14 +187,14 @@ module game_core #(
     wire away_d = !ddy[5];
     wire [4:0] hcx = away_r ? rx + 5'd1 : rx - 5'd1;   // the cells one step away horizontally / vertically
     wire [4:0] vcy = away_d ? ry + 5'd1 : ry - 5'd1;
-    wire can_h  = (away_r ? (rx < 5'd19) : (rx > 5'd0)) && !bh;   // neither a wall nor a blocker is in the way
-    wire can_v  = (away_d ? (ry < 5'd19) : (ry > 5'd0)) && !bv;
+    wire can_h  = (away_r ? (rx != 5'd19) : (rx != 5'd0)) && !bh;   // neither a wall nor a blocker is in the way
+    wire can_v  = (away_d ? (ry != 5'd19) : (ry != 5'd0)) && !bv;
     wire use_h  = (horiz && can_h) || (!horiz && !can_v);   // when the best axis is blocked slide along the other one
     wire do_h   = use_h && can_h;
     wire do_v   = !use_h && can_v;
     wire rnd    = (rl[3:2] == 2'b00);                  // one move in four is random
-    wire [4:0] rtx = (rl[1:0] == 2'd0) ? ((rx > 5'd0) ? rx - 5'd1 : rx) : (rl[1:0] == 2'd1) ? ((rx < 5'd19) ? rx + 5'd1 : rx) : rx;
-    wire [4:0] rty = (rl[1:0] == 2'd2) ? ((ry > 5'd0) ? ry - 5'd1 : ry) : (rl[1:0] == 2'd3) ? ((ry < 5'd19) ? ry + 5'd1 : ry) : ry;
+    wire [4:0] rtx = (rl[1:0] == 2'd0) ? ((rx != 5'd0) ? rx - 5'd1 : rx) : (rl[1:0] == 2'd1) ? ((rx != 5'd19) ? rx + 5'd1 : rx) : rx;
+    wire [4:0] rty = (rl[1:0] == 2'd2) ? ((ry != 5'd0) ? ry - 5'd1 : ry) : (rl[1:0] == 2'd3) ? ((ry != 5'd19) ? ry + 5'd1 : ry) : ry;
 
     wire [4:0] qx = (seq == 3'd1) ? htx : (seq == 3'd2) ? hcx : (seq == 3'd3) ? rx  : (seq == 3'd4) ? rtx : cx;
     wire [4:0] qy = (seq == 3'd1) ? hty : (seq == 3'd2) ? ry  : (seq == 3'd3) ? vcy : (seq == 3'd4) ? rty : cy;
@@ -269,7 +272,7 @@ module game_core #(
     wire hum_here = (px == cx) && (py == cy);
     wire rng_here = (rx == cx) && (ry == cy);
 
-    wire blue = (bx == cx) && (by == cy);             // the cell of the latest catch
+    wire blue = (MARK != 0) && (bx == cx) && (by == cy);             // the cell of the latest catch
     wire blk_here = qb && !rng_here;   // a blocker (never drawn under a square)
 
     // idle timer bar: top of the screen, y = 0..5, from x = 0; only with an upgrade. One game tick = MOVE = 8 pixels
@@ -285,7 +288,7 @@ module game_core #(
     wire       lvl_row = (y[9:4] == 6'd2) && (y[3] == 1'b1);
     wire       lvl1_sq = lvl_row && (x[9:4] == 6'd0) && (x[3] == 1'b1) && (level != 2'd0);
     wire       lvl2_sq = lvl_row && (x[9:4] == 6'd1) && (x[3] == 1'b1) && (level == 2'd2);
-    wire       lvl_sq  = lvl1_sq || lvl2_sq;
+    wire       lvl_sq  = (LVLSQ != 0) && (lvl1_sq || lvl2_sq);
     wire       tally = (x[9:3] != 7'd0) && (y[9:5] == 5'd0) && (y[4:3] != 2'd0) && !x[2] && (x[9:3] <= {2'b00, catches});
 
     // trophy: a 16 x 16 bitmap of which only the left half is stored (the right half is its mirror image);
@@ -315,7 +318,10 @@ module game_core #(
             default: crow = 8'b00111111;
         endcase
     end
-    wire cup_px = ((crow << cm) & 8'h80) != 8'd0;
+    // the plain cup is the bitmap without its handle rows: how many columns from the outside are empty in each row
+    wire [2:0] cthr = (cyy[3:0] < 4'd7) ? 3'd2 : (cyy[3:0] < 4'd10) ? cyy[2:0] - 3'd4 : (cyy[3:0] < 4'd13) ? 3'd6 :
+                      (cyy[3:0] == 4'd13) ? 3'd5 : (cyy[3:0] == 4'd14) ? 3'd3 : 3'd2;
+    wire cup_px = (CUPBMP != 0) ? (((crow << cm) & 8'h80) != 8'd0) : (cm >= cthr);
 
     // fog of war: a (2*half+1) x (2*half+1) window of cells with the human in the middle (kept on the map);
     // half = 1, 2, 3 for 3 x 3, 5 x 5, 7 x 7
