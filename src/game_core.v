@@ -13,7 +13,7 @@
 //     trophy is drawn in the middle of the screen. (With LVLSQ = 1 the second cyan square turns gold when the cup is affordable.)
 //   * Tile blockers: red cells nobody can enter (you stay where you are, the yellow square walks around them). There
 //     are about BN0, BN1, BN2 of them at fog level 0, 1, 2 (3 x 3, 5 x 5, 7 x 7; currently 10, 35, 50) and they
-//     jump to new places every 16 game ticks. Which cells are blocked comes from a hash of (column, row,
+//     jump to new places every BTICKS (22) game ticks, about 3 s. Which cells are blocked comes from a hash of (column, row,
 //     epoch), so no positions are stored; the numbers are averages (usually within about +-30 %: 10 -> 5..15,
 //     35 -> 27..44). Only blockers inside your clear window are visible.
 //   * Idle timer: with an upgrade, a bar at the top of the screen runs down in TLEN pictures (60 per second, counted in game ticks). A catch (or buying an upgrade)
@@ -37,6 +37,7 @@ module game_core #(
     parameter BN0 = 10,          // about this many blockers at fog level 0 (3 x 3)
     parameter BN1 = 35,          //                                 level 1 (5 x 5)
     parameter BN2 = 50,          //                                 level 2 (7 x 7)
+    parameter BTICKS = 22,       // game ticks between two regenerations of the blockers (22 = about 3 s; max 32)
     parameter MARK   = 0,        // 1 = the cell of the latest catch stays dark blue (costs 10 flip-flops and ~6 % of a 1x1 tile)
     parameter LVLSQ  = 0,        // 1 = cyan squares under the tally show the fog upgrades (~4 % of a 1x1 tile)
     parameter CUPBMP = 0,        // 1 = the trophy has handles (a 16 x 8 bitmap), 0 = a plain cup (~1.5 % of a 1x1 tile)
@@ -72,7 +73,9 @@ module game_core #(
     reg [2:0] mvc;                // counts pictures 0 .. MOVE-1 (MOVE <= 8)
     reg [1:0] rc;
     reg [2:0] seq;                // after a tick: 1..4 = blocker lookups one by one, 5 = commit the moves
-    wire tick   = frame && (mvc == MOVE - 1) && !won;
+    // verilator lint_off WIDTH
+    wire tick   = frame && (mvc == MOVE - 1) && !won;   // MOVE - 1 is a 32 bit integer, mvc has 3 bits: fine for MOVE <= 8
+    // verilator lint_on WIDTH
     wire commit = (seq == 3'd5);
     wire rtick  = commit && (rc == 2'd2);
     always @(posedge clk) begin
@@ -130,9 +133,9 @@ module game_core #(
     wire [4:0] ny  = (r5 < 5'd20) ? r5 : r5 - 5'd12;                     // 0..19
 
     // ---- tile blockers: a cell is blocked when hash(column, row, epoch) is below a level dependent threshold.
-    // The epoch counts regenerations (mod 64).
-    reg [9:0] bcnt;                                // game ticks: low 4 bits = since the last regeneration, upper 6 = epoch
-    wire [5:0] epoch = bcnt[9:4];                  // blockers move to new places every 16 game ticks
+    // The epoch counts regenerations: 16 different patterns, then the first one comes back (after about 48 s).
+    reg [4:0] tcnt;                                // game ticks since the last regeneration
+    reg [3:0] epoch;
     // thresholds on the 8 bit hash: n * 256 / 400 gives about n of the 400 cells (10 -> 6, 35 -> 22, 50 -> 32)
     localparam integer BI0 = (BN0 * 256 + 200) / 400;
     localparam integer BI1 = (BN1 * 256 + 200) / 400;
@@ -141,24 +144,25 @@ module game_core #(
     localparam [7:0] BT1 = BI1[7:0];
     localparam [7:0] BT2 = BI2[7:0];
     wire [7:0] bthr = (level == 2'd0) ? BT0 : (level == 2'd1) ? BT1 : BT2;
-    // The hash: spread (column, row, epoch) over 10 bits with shifts and XORs (cheap: no adders), then two AND rounds,
-    // t ^= (t << a) & (t >> b), which make it non-linear. The shifts were picked by a search so that the blocked cells
-    // look random: they do not clump, and a regeneration changes most of them (checked with a Python model).
-    function [7:0] bhash(input [4:0] ax, input [4:0] ay, input [5:0] e);
+    // The hash: spread (column, row, epoch) over 10 bits with shifts and XORs (cheap: no adders), then ONE AND round,
+    // t ^= (t << 1) & (t >> 5), which makes it non-linear. The shifts were picked by a search so that the blocked cells
+    // look random for the 16 epochs: they do not clump, and a regeneration changes most of them (Python model).
+    function [7:0] bhash(input [4:0] ax, input [4:0] ay, input [3:0] e);
         reg [9:0] t;
         begin
-            t = ({5'd0, ax} << 7) ^ ({5'd0, ay} << 2) ^ ({4'd0, e} << 4) ^ ({4'd0, e} << 5) ^ ({5'd0, ax} << 8) ^ ({5'd0, ay} << 7);
-            t = t ^ (t << 4) ^ (t >> 3);
-            t = t ^ ((t << 4) & (t >> 4));
-            t = t ^ ((t << 5) & (t >> 1));
+            t = ({5'd0, ax} << 4) ^ ({5'd0, ay} << 1) ^ ({6'd0, e} << 8) ^ ({6'd0, e} << 5) ^ ({5'd0, ax} << 8) ^ ({5'd0, ay} << 6);
+            t = t ^ (t << 1) ^ (t >> 8);
+            t = t ^ ((t << 1) & (t >> 5));
             bhash = t[9:2];
         end
     endfunction
 
     // the cell row and the line inside it: 24 = 8 x 3, so y / 24 = (y / 8) / 3 and y % 24 = ((y / 8) % 3) * 8 + y % 8
     wire [5:0] y8 = y[8:3];                        // 0..59 while the picture is drawn
-    wire [4:0] cy  = y8 / 6'd3;
+    // verilator lint_off WIDTH
+    wire [4:0] cy  = y8 / 6'd3;                    // the quotient is 0..19 and the remainder 0..2: the upper bits are always 0
     wire [1:0] y3  = y8 % 6'd3;
+    // verilator lint_on WIDTH
     wire [4:0] yin = {y3, y[2:0]};
     wire [4:0] cx  = x[9:5];
     wire [4:0] xin = x[4:0];
@@ -213,7 +217,8 @@ module game_core #(
             trem    <= TT;
             won     <= 1'b0;
             bx <= 5'd31; by <= 5'd31;
-            bcnt <= 10'd0;
+            tcnt <= 5'd0;
+            epoch <= 4'd0;
             seq <= 3'd0;
             hbk <= 1'b0; bh <= 1'b0; bv <= 1'b0; rbk <= 1'b0;
             rl <= 4'd0;
@@ -242,7 +247,12 @@ module game_core #(
                 rx <= nx; ry <= ny;
             end
             if (commit) begin
-                bcnt <= bcnt + 10'd1;                             // the epoch advances every 16 game ticks
+                if (tcnt == BTICKS - 1) begin                     // the blockers move to a new pattern every BTICKS game ticks
+                    tcnt  <= 5'd0;
+                    epoch <= epoch + 4'd1;
+                end else begin
+                    tcnt <= tcnt + 5'd1;
+                end
                 // the human: one step (two buttons at once give a diagonal step), unless that cell is blocked
                 if (!hbk) begin
                     px <= htx;

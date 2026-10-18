@@ -21,6 +21,4 @@ ProjectPlan.md
 /tools/*
 !/tools/*.py
 /archive/*
-!/archive/*.py
 /src1/*
-!/src1/*.py
